@@ -30,7 +30,7 @@ public final class ApiModels {
     public record Bootstrap(List<KnowledgeBase> knowledgeBases, List<Document> documents,
                             List<Activity> activities, List<Session> sessions, Settings settings,
                             Stats stats, String mode) {}
-    public record Health(String status, String business, String ai, String mode) {}
+    public record Health(String status, String business, String ai, String mode, String aiIndex, long aiChunks) {}
     public record ChatResponse(String sessionId, Message message, String mode) {}
     public record ErrorResponse(String message) {}
 

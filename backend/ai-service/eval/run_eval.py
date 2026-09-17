@@ -69,6 +69,7 @@ class CaseResult:
     gold_passages: list[str] = field(default_factory=list)
     ranked_docs: list[str] = field(default_factory=list)
     ranked_passage_hits: list[bool] = field(default_factory=list)
+    ranked_new_hits: list[bool] = field(default_factory=list)
     passage_found: dict[str, int] = field(default_factory=dict)
     returned: int = 0
     seconds: float = 0.0
@@ -88,15 +89,16 @@ def run_case(case: dict, corpus: list[SourceDocument], top_k: int, options: dict
     result.seconds = time.perf_counter() - started
 
     wanted = {normalize(passage) for passage in result.gold_passages}
+    covered: set[str] = set()
     for item in ranked[:max(EVAL_KS)]:
         text = normalize(item.chunk.text)
-        hit = any(passage in text for passage in wanted)
+        found = {passage for passage in wanted if passage in text}
         result.ranked_docs.append(item.chunk.document_id)
-        result.ranked_passage_hits.append(hit)
-        if hit:
-            for passage in wanted:
-                if passage in text:
-                    result.passage_found.setdefault(passage, len(result.ranked_passage_hits))
+        result.ranked_passage_hits.append(bool(found))
+        result.ranked_new_hits.append(bool(found - covered))
+        covered |= found
+        for passage in found:
+            result.passage_found.setdefault(passage, len(result.ranked_passage_hits))
     result.returned = len(selected)
     if selected:
         result.answer = local_answer(case["question"], selected)
@@ -135,7 +137,7 @@ def reciprocal_rank(result: CaseResult, k: int) -> float | None:
 def ndcg(result: CaseResult, k: int) -> float | None:
     if not result.gold_passages:
         return None
-    gains = result.ranked_passage_hits[:k]
+    gains = result.ranked_new_hits[:k]
     dcg = sum(1.0 / math.log2(rank + 1) for rank, hit in enumerate(gains, start=1) if hit)
     ideal = sum(1.0 / math.log2(rank + 1) for rank in range(1, min(len(result.gold_passages), k) + 1))
     return dcg / ideal
@@ -190,10 +192,10 @@ def report(results: list[CaseResult], overall: dict, by_kind: dict, options: dic
     lines = [
         "# 检索评测基线",
         "",
-        "> 由 `python -m eval.run_eval` 生成，请勿手工编辑；指标解读见 `docs/roadmap.md` 的 S1 结论。",
+        "> 由 `python -m eval.run_eval --out docs/eval-baseline.md` 生成，请勿手工编辑；指标解读见 `docs/roadmap.md` 的 S1/S2 结论。",
         "",
         f"- 语料：{len(corpus)} 篇文档（`business-service/src/main/resources/seed/documents.json`），"
-        f"{options['chunkSize']} 分段设置下共 {chunks} 个片段（LlamaIndex 按 token 计数）",
+        f"{options['chunkSize']} 字符分段预算下共 {chunks} 个片段",
         f"- 用例：{int(overall['cases'])} 条；混合检索 {options['hybridSearch']}，重排 {options['reranking']}",
         "- 覆盖范围：检索层与本地摘录层指标；生成式答案质量需配置模型网关后另行评测",
         "",

@@ -37,10 +37,11 @@
 │                     ↓ HTTP (127.0.0.1)                   │
 ├──────────────────────────────────────────────────────────┤
 │              Python AI 服务 (Port 9001)                   │
-│          FastAPI · LangChain · LlamaIndex                │
+│             FastAPI · LangChain · numpy                  │
 │                                                          │
 │  · 文件解析 (PDF / DOCX / TXT / MD / CSV)                │
-│  · BM25 + TF-IDF 混合检索 + 倒数秩融合                    │
+│  · BM25 + TF-IDF + 语义三路检索 + 倒数秩融合              │
+│  · 本地 SQLite 索引缓存分段与向量                         │
 │  · LLM 生成式问答 (LangChain ChatOpenAI)                  │
 │  · 无 API Key 时降级为原文摘录检索                        │
 └──────────────────────────────────────────────────────────┘
@@ -63,7 +64,8 @@
 | 业务数据库 | H2 文件数据库 | 嵌入式 |
 | AI 服务 | Python, FastAPI, Uvicorn | FastAPI ≥0.118 |
 | LLM 编排 | LangChain (ChatOpenAI) | langchain-openai ≥0.3 |
-| 文档处理 | LlamaIndex (SentenceSplitter) | llama-index ≥0.12 |
+| 语义检索 | numpy（截断 SVD 潜在语义路 + 向量缓存） | numpy ≥2 |
+| 持久索引 | SQLite（标准库 `sqlite3`，分段与向量缓存） | 嵌入式 |
 | 文件解析 | pypdf, python-docx | - |
 | 配置管理 | python-dotenv | ≥1.0 |
 
@@ -111,9 +113,10 @@ my-rag/
 │   │           └── BusinessApiIntegrationTest.java   # 集成测试（MockMvc + 桩 AI 服务）
 │   │
 │   └── ai-service/                     # Python AI 服务
-│       ├── app.py                      # FastAPI 主应用（解析、分段、检索、问答）
+│       ├── app.py                      # FastAPI 主应用（解析、分段、检索、向量缓存、问答）
 │       ├── requirements.txt            # Python 依赖
-│       ├── .env.example                # LLM 网关配置模板（复制为 .env）
+│       ├── .env.example                # LLM / Embedding 网关与索引路径配置模板（复制为 .env）
+│       ├── .index/                     # 本地 SQLite 检索索引（运行时生成，已 gitignore）
 │       ├── eval/
 │       │   ├── dataset.jsonl           # Golden set：192 条问答用例
 │       │   └── run_eval.py             # 指标脚本 + markdown 报告 + 回归门
@@ -121,7 +124,7 @@ my-rag/
 │       └── test_eval.py                # 评测集与指标守护测试
 │
 ├── docs/
-│   ├── roadmap.md                      # 迭代路线图与 S1 结论
+│   ├── roadmap.md                      # 迭代路线图与 S1/S2 实测结论
 │   └── eval-baseline.md                # 检索评测基线（由 eval.run_eval 生成）
 │
 └── dist/                               # 前端构建产物
@@ -136,7 +139,7 @@ my-rag/
 - 知识库总数、文档总数、知识片段数、问答次数统计卡片
 - 近 30 天查询量与 Token 用量趋势图
 - 最近活动流（上传、问答、创建等操作记录）
-- 系统健康状态（业务服务 + AI 服务实时监测）
+- 系统健康状态（业务服务 + AI 服务实时监测，含检索索引就绪状态与缓存片段数）
 - 快捷入口：创建知识库、上传文档、开始问答
 
 ### 2. 知识库管理 (Library)
@@ -163,7 +166,7 @@ my-rag/
 - **引用追溯**：每条回答标注来源编号 [1] [2]…，点击可查看文档名、页码、原文摘录与相关度评分
 - **双模式运行**：
   - **Connected 模式**（配置了 API Key）：通过 LangChain ChatOpenAI 调用 LLM 生成式回答
-  - **Local 模式**（无 API Key）：降级为 BM25 + TF-IDF 原文检索摘录
+  - **Local 模式**（无 API Key）：降级为 BM25 + TF-IDF + 语义检索的原文摘录
 - **会话历史**：侧边栏展示历史对话，支持切换与删除
 - **快捷操作**：从文档预览直接发起提问，自动填充问题与知识库范围
 
@@ -182,7 +185,7 @@ my-rag/
 
 - 工作空间名称
 - 检索参数配置：
-  - 分段大小 (chunkSize)：128 ~ 8192（LlamaIndex 按 token 计数，实际片段比数字短，S2 统一口径）
+  - 分段大小 (chunkSize)：128 ~ 8192 字符预算（按字符计，含句级重叠；默认 650）
   - 返回条数 (topK)：1 ~ 20
   - 生成温度 (temperature)：0.0 ~ 2.0
   - 混合检索开关 (hybridSearch)
@@ -212,9 +215,10 @@ python -m venv .venv
 # 安装依赖
 pip install -r requirements.txt
 
-# 配置 LLM（可选，不配置则使用本地检索模式）
+# 配置 LLM（可选，不配置则使用本地摘录检索模式）
 cp .env.example .env
-# 编辑 .env 填入 API_KEY、BASE_URL、MODEL_ID
+# 编辑 .env 填入 LLM_API_KEY、LLM_BASE_URL、LLM_MODEL_ID
+# 语义召回可选配 EMBEDDING_*（OpenAI 兼容 /v1/embeddings）；不配则走离线 LSI
 
 # 启动服务 → http://127.0.0.1:9001
 python app.py
@@ -254,7 +258,7 @@ npm run build
 # Java 业务服务集成测试（MockMvc + 桩 AI 服务，不需要 Python 在跑）
 cd backend/business-service && mvn verify
 
-# Python AI 服务单元测试（app + 评测集守护，共 41 个）
+# Python AI 服务单元测试（app + 评测集守护，共 52 个）
 cd backend/ai-service && python -m unittest discover
 ```
 
@@ -272,16 +276,18 @@ python -m eval.run_eval                                   # markdown 报告
 python -m eval.run_eval --out ../../docs/eval-baseline.md # 重新生成基线文件
 python -m eval.run_eval --only paraphrase                 # 按用例类型或 id 过滤
 python -m eval.run_eval --no-hybrid --json                # 对比检索开关
-python -m eval.run_eval --min docHit@5=0.80 --max falseRefusal=0.15   # 回归门
+python -m eval.run_eval --min docHit@5=0.86 --max falseRefusal=0.15   # 回归门
 ```
 
 指标口径：`docRecall` / `docHit` / `passageRecall` / `rr`(MRR) / `ndcg` 取 @1/@3/@5/@10；
 `refusal`（应拒答且确实无引用）、`falseRefusal`（可答却被拒）、`answerCoverage`
 （本地摘录答案覆盖期望要点的比例）。当前基线与解读见 `docs/eval-baseline.md` 和
-`docs/roadmap.md` 的 S1 结论。
+`docs/roadmap.md` 的 S1/S2 结论。
 
 CI（`.github/workflows/ci.yml`）跑上面三条 job，并在 AI 服务 job 里以
-`docHit@5 ≥ 0.80`、`ndcg@10 ≥ 0.75`、`refusal ≥ 0.45`、`falseRefusal ≤ 0.15` 作为回归门。
+`docHit@5 ≥ 0.86`、`ndcg@10 ≥ 0.78`、`passageRecall@5 ≥ 0.85`、`refusal ≥ 0.45`、
+`falseRefusal ≤ 0.15` 作为回归门；评测用 `RAG_INDEX_PATH` 指向 runner 临时目录，
+不污染工作区。
 
 ---
 
@@ -292,7 +298,7 @@ CI（`.github/workflows/ci.yml`）跑上面三条 job，并在 AI 服务 job 里
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/bootstrap` | 获取全量初始化数据（知识库、文档、会话、设置、统计） |
-| GET | `/health` | 系统健康检查（业务服务 + AI 服务状态） |
+| GET | `/health` | 系统健康检查（业务服务 + AI 服务状态 + AI 索引状态 `aiIndex`/`aiChunks`） |
 | POST | `/knowledge-bases` | 创建知识库 |
 | PATCH | `/knowledge-bases/{id}` | 更新知识库 |
 | DELETE | `/knowledge-bases/{id}` | 删除知识库（级联删除文档） |
@@ -310,7 +316,7 @@ CI（`.github/workflows/ci.yml`）跑上面三条 job，并在 AI 服务 job 里
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/health` | AI 服务健康检查，返回状态与模式 |
+| GET | `/health` | AI 健康检查：`status`、`mode`、`model`、`index`（ready/unavailable）、`indexedChunks`、`indexedDocuments`、`vectorCache`、`semantic`（gateway/lsi） |
 | POST | `/internal/parse` | 解析文件（Base64），返回提取文本 |
 | POST | `/internal/chunk` | 按检索侧同一分片器统计片段数，返回 `chunkCount` |
 | POST | `/internal/query` | 执行检索与问答，返回答案、引用、耗时 |
@@ -328,9 +334,19 @@ LLM_BASE_URL=https://api.openai.com/v1   # OpenAI 兼容 API 地址
 LLM_MODEL_ID=gpt-4o-mini                 # 模型标识
 LLM_MODEL_NAME=GPT-4o mini              # 模型显示名称
 LLM_TIMEOUT_SECONDS=25                   # 网关超时，取值被夹到 1~60 秒
+
+# 语义召回配置（可选，两者同时填写才生效）
+EMBEDDING_API_KEY=                       # 留空则语义路走离线 LSI
+EMBEDDING_BASE_URL=https://api.openai.com/v1
+EMBEDDING_MODEL_ID=                      # OpenAI 兼容 /v1/embeddings 的模型标识
+
+# 本地检索索引（SQLite）路径，留空则用 backend/ai-service/.index/retrieval.db
+RAG_INDEX_PATH=
 ```
 
 支持任何 OpenAI 兼容的 API 端点（OpenAI、Azure OpenAI、本地 Ollama、vLLM 等）。
+注意 DeepSeek 等只提供补全、不提供 `/v1/embeddings` 的网关无法开启向量路——此时语义召回
+仍由离线 LSI 承担，`/health` 的 `semantic` 字段会显示 `lsi`。
 
 ### Java 业务服务 (application.properties)
 
@@ -372,24 +388,32 @@ server: {
 ```
 用户提问
   ↓
+本地 SQLite 索引按内容哈希取片段（未命中才重新分段并回写）
+  ↓
 中文分词（单字 + Bigram + 拉丁词）
   ↓
-┌─────────────────┬──────────────────┐
-│  BM25 关键词检索  │  TF-IDF 余弦相似度  │
-└────────┬────────┴────────┬─────────┘
-         ↓   倒数秩融合 (RRF)   ↓
-         └────────┬───────────┘
-                  ↓
-          重排序（覆盖率 + 短语匹配）
-                  ↓
-          去重 + 上下文预算裁剪
-                  ↓
-          组装 Prompt → LLM 生成回答
-                  ↓
-          解析引用编号 → 返回答案 + 引用
+┌──────────┬──────────────┬──────────────────┐
+│ BM25 关键词 │ TF-IDF 余弦    │ 语义路（LSI / 向量） │
+└────┬─────┴──────┬───────┴────────┬─────────┘
+     ↓   加权倒数秩融合 (RRF，三路)    ↓
+     └────────┬───────────┘
+              ↓
+      重排序（覆盖率 + 短语匹配）
+              ↓
+      去重 + 上下文预算裁剪
+              ↓
+      组装 Prompt → LLM 生成回答
+              ↓
+      解析引用编号 → 返回答案 + 引用
 ```
 
-- **混合检索**：BM25 捕捉关键词精确匹配，TF-IDF 余弦相似度捕捉语义相关性，通过 Reciprocal Rank Fusion 融合排序
+- **混合检索**：BM25 捕捉关键词精确匹配，TF-IDF 余弦相似度与语义路各自成榜，按权重做三路 RRF 融合
+- **语义路**：默认用截断 SVD 的离线 LSI（零外部依赖、结果可复现）；配置 `EMBEDDING_*` 后换成 OpenAI 兼容
+  `/v1/embeddings` 的真向量，片段向量按内容哈希缓存在本地索引里
+- **持久索引**：分段结果、词频与向量统一落在 SQLite，键含分段器版本与 `chunkSize`，文档改动即失效，
+  因此检索延迟不再随语料规模线性增长；索引不可写时自动退回内存计算
+- **拒答判据**：词面完全无证据即拒答；只有模型校准过的向量相似度（≥ `VECTOR_EVIDENCE_FLOOR`）能在零词面证据时单独召回，
+  LSI 分数因量级随语料规模漂移不享有这个权利
 - **中文分词**：针对中文文本特性，采用单字 + 双字组合 (Bigram) 的分词策略，配合自定义停用词表
 - **重排序**：在融合排序基础上，加入查询术语覆盖率与短语精确匹配评分
 - **上下文预算**：控制送入 LLM 的总文本量（默认 5000 字符），避免超出 Token 限制

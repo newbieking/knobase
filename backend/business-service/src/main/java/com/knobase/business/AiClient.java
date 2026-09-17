@@ -37,7 +37,9 @@ public class AiClient {
     }
 
     public record Answer(String answer, List<Citation> citations, double elapsed, String model, String mode) {}
-    public record AiHealth(boolean up, String mode) {}
+    public record AiHealth(boolean up, String mode, String index, long chunks) {
+        public static AiHealth down() { return new AiHealth(false, "local", "unavailable", 0); }
+    }
 
     public String parse(String name, byte[] bytes) {
         JsonNode node = post("/internal/parse", Map.of("name", name, "data", Base64.getEncoder().encodeToString(bytes)));
@@ -93,17 +95,19 @@ public class AiClient {
         try {
             var request = HttpRequest.newBuilder(URI.create(baseUrl + "/health")).timeout(Duration.ofSeconds(3)).GET().build();
             var response = client.send(request, HttpResponse.BodyHandlers.ofString(java.nio.charset.StandardCharsets.UTF_8));
-            if (response.statusCode() < 200 || response.statusCode() >= 300) return new AiHealth(false, "local");
+            if (response.statusCode() < 200 || response.statusCode() >= 300) return AiHealth.down();
             JsonNode body = json.readTree(response.body());
             String mode = mode(body);
             String status = body.path("status").asText("up");
             boolean up = status.equals("up") || status.equals("ok") || status.equals("healthy");
-            return new AiHealth(up, up ? mode : "local");
+            if (!up) return AiHealth.down();
+            return new AiHealth(true, mode, body.path("index").asText("unavailable"),
+                    body.path("indexedChunks").asLong(0));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return new AiHealth(false, "local");
+            return AiHealth.down();
         } catch (Exception e) {
-            return new AiHealth(false, "local");
+            return AiHealth.down();
         }
     }
 

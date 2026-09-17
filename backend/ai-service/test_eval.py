@@ -1,15 +1,29 @@
 """Guards for the evaluation fixtures: a rotten golden set must fail the build, not silently skew metrics."""
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import app
+from app import SourceDocument, index_store
 from eval.run_eval import (
-    DEFAULT_DATASET, aggregate, check_corpus, load_corpus, load_dataset, normalize, run_case,
+    DEFAULT_DATASET, EVAL_KS, aggregate, check_corpus, doc_hit, load_corpus, load_dataset, normalize, run_case,
 )
 
 OPTIONS = {"chunkSize": 512, "hybridSearch": True, "reranking": True}
 KINDS = {"exact", "paraphrase", "numeric", "cross_doc", "distractor", "latin", "no_answer", "scope"}
+_INDEX = tempfile.TemporaryDirectory(prefix="knobase-eval-")
+
+
+def setUpModule():
+    os.environ["RAG_INDEX_PATH"] = os.path.join(_INDEX.name, "retrieval.db")
+
+
+def tearDownModule():
+    index_store().close()
+    _INDEX.cleanup()
 
 
 class CorpusTests(unittest.TestCase):
@@ -81,6 +95,17 @@ class MetricTests(unittest.TestCase):
         self.assertNotIn("refusal", scores, "只有应拒答用例才参与拒答指标")
         self.assertEqual(scores["falseRefusal"], 0.0)
 
+    def test_ndcg_stays_bounded_when_chunks_repeat_a_passage(self):
+        passage = "员工试用期年休假 5 天，转正后按工龄递增。"
+        documents = [SourceDocument(id=f"dup{index}", name=f"dup{index}.txt", content=passage, kbId="kb-dup")
+                     for index in range(6)]
+        case = {"id": "t1b", "kind": "exact", "question": "年休假 5 天怎么算",
+                "gold": {"docs": ["dup0"], "passages": ["年休假 5 天"]}}
+        result = run_case(case, documents, 10, OPTIONS)
+        self.assertGreater(sum(result.ranked_passage_hits), sum(result.ranked_new_hits),
+                           "重复片段应当存在，否则这条守卫没有覆盖到场景")
+        self.assertLessEqual(aggregate([result], EVAL_KS)["ndcg@10"], 1.0)
+
     def test_ranking_is_stable_across_repeats(self):
         case = {"id": "t2", "kind": "exact", "question": "年假有多少天？", "kbId": "kb-policy",
                 "gold": {"docs": ["doc-policy-leave"], "passages": ["年休假 5 天"]}}
@@ -104,6 +129,13 @@ class MetricTests(unittest.TestCase):
             json.dumps(run_case(case, self.corpus, 10, {**OPTIONS, "reranking": False}).ranked_docs),
         }
         self.assertGreater(len(variants), 1, "检索设置开关应当影响排序，否则说明设置未生效")
+
+    def test_paraphrase_reaches_its_document_only_through_the_semantic_route(self):
+        case = self.cases["pol-expense-02"]
+        with patch.object(app, "semantic_similarity", lambda query_tokens, counts: []):
+            lexical = run_case(case, self.corpus, 10, OPTIONS)
+        self.assertEqual(doc_hit(lexical, 5), 0.0, "词面链路已能召回，这条守卫失去了意义")
+        self.assertEqual(doc_hit(run_case(case, self.corpus, 10, OPTIONS), 5), 1.0)
 
 
 if __name__ == "__main__":

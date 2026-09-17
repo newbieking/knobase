@@ -41,6 +41,7 @@ jobs:
         working-directory: backend/ai-service
     env:
       PYTHONIOENCODING: utf-8
+      RAG_INDEX_PATH: ${{ runner.temp }}/rag-index/retrieval.db
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -53,9 +54,11 @@ jobs:
       # 语料与 seed 文档、评测集必须同源，否则基线数字指向一份已不存在的文档集。
       - run: python -m eval.run_eval --check-corpus
       - name: 评测回归门
+        # 门槛来自 S2 实测基线（docHit@5 0.881 / ndcg@10 0.797 / passageRecall@5 0.866），留出约 2pp 余量。
         run: |
           python -m eval.run_eval --json \
-            --min docHit@5=0.80 \
-            --min ndcg@10=0.75 \
+            --min docHit@5=0.86 \
+            --min ndcg@10=0.78 \
+            --min passageRecall@5=0.85 \
             --min refusal=0.45 \
             --max falseRefusal=0.15

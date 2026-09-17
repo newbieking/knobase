@@ -25,6 +25,9 @@ replay_pid*.log
 # Data (H2 database)
 data/
 
+# Retrieval index cache (SQLite)
+backend/ai-service/.index/
+
 # IDE
 .idea/
 .vscode/

@@ -5,12 +5,13 @@ import io
 import json
 import os
 import re
+import tempfile
 import threading
 import unittest
 import urllib.error
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from docx import Document
 from pypdf import PdfWriter
@@ -18,7 +19,8 @@ from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 
 from app import (
     CHUNK_SIZE, CONTEXT_BUDGET, LOCAL_MODEL, MAX_FILE_BYTES, QueryRequest, SourceDocument,
-    app, chunk_document, context_block, rank_chunks, retrieve, select_context, tokenize,
+    app, chunk_document, context_block, document_units, index_store, rank_chunks, retrieve,
+    select_context, tokenize,
 )
 
 
@@ -52,6 +54,11 @@ async def asgi_request(method, path, payload=None):
 
 def request(method, path, payload=None):
     return asyncio.run(asgi_request(method, path, payload))
+
+
+def release_index(test):
+    # Windows refuses to delete a directory while the cached index handle is still open.
+    test.addCleanup(index_store().close)
 
 
 def source(identifier, text, name=None, kb="kb-1"):
@@ -94,12 +101,16 @@ def make_pdf(page_texts, encrypted=False):
 
 class ServiceTests(unittest.TestCase):
     def setUp(self):
+        self.index_dir = tempfile.TemporaryDirectory(prefix="knobase-index-")
+        self.addCleanup(self.index_dir.cleanup)
         self.environment = patch.dict(os.environ, {
             "LLM_API_KEY": "", "LLM_BASE_URL": "https://api.openai.com/v1",
             "LLM_MODEL_ID": "gpt-4o-mini", "LLM_TIMEOUT_SECONDS": "2",
+            "RAG_INDEX_PATH": os.path.join(self.index_dir.name, "retrieval.db"),
         })
         self.environment.start()
         self.addCleanup(self.environment.stop)
+        release_index(self)
 
     def parse(self, name, raw):
         return request("POST", "/internal/parse", {"name": name, "data": base64.b64encode(raw).decode()})
@@ -107,12 +118,19 @@ class ServiceTests(unittest.TestCase):
     def test_local_health_exact_contract(self):
         status, body = request("GET", "/health")
         self.assertEqual(status, 200)
-        self.assertEqual(body, {"status": "up", "mode": "local", "model": LOCAL_MODEL})
+        self.assertEqual(set(body), {"status", "mode", "model", "index", "indexedChunks",
+                                     "indexedDocuments", "vectorCache", "semantic"})
+        self.assertEqual(body["mode"], "local")
+        self.assertEqual(body["model"], LOCAL_MODEL)
+        self.assertEqual(body["index"], "ready")
+        self.assertEqual(body["semantic"], "lsi")
+        self.assertEqual((body["indexedChunks"], body["indexedDocuments"], body["vectorCache"]), ("0", "0", "0"))
 
     def test_connected_health_only_with_key(self):
         with patch.dict(os.environ, {"LLM_API_KEY": "test-secret", "LLM_MODEL_NAME": "configured-model"}):
             status, body = request("GET", "/health")
-            self.assertEqual(body, {"status": "up", "mode": "connected", "model": "configured-model"})
+            self.assertEqual(body["mode"], "connected")
+            self.assertEqual(body["model"], "configured-model")
             self.assertNotIn("test-secret", json.dumps(body))
         with patch.dict(os.environ, {"LLM_API_KEY": "   ", "LLM_MODEL_NAME": "configured-model"}):
             self.assertEqual(request("GET", "/health")[1]["model"], LOCAL_MODEL)
@@ -265,6 +283,21 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(page_chunks[-1].end, len(text.split("\f")[page - 1]))
             self.assertTrue(all(left.end >= right.start for left, right in zip(page_chunks, page_chunks[1:])))
 
+    def test_chunk_size_is_a_character_budget_with_full_coverage(self):
+        text = "员工每年享有10天带薪年假。" * 40 + "差旅报销必须提供发票。" * 25
+        document = SourceDocument(**source("policy", text))
+        chunks = chunk_document(document, 128)
+        self.assertGreater(len(chunks), 2)
+        self.assertTrue(all(0 < len(chunk.text) <= 128 for chunk in chunks))
+        covered: set[int] = set()
+        for chunk in chunks:
+            self.assertEqual(chunk.page_text[chunk.start:chunk.end], chunk.text)
+            covered.update(range(chunk.start, chunk.end))
+        self.assertTrue(all(left.end > right.start for left, right in zip(chunks, chunks[1:])),
+                        "相邻片段必须重叠，否则句子边界处的条件会被切开")
+        self.assertTrue(all(index in covered for index, char in enumerate(text) if not char.isspace()),
+                        "分段必须覆盖全部正文")
+
     def test_long_sentence_is_not_clipped_in_answer(self):
         sentence = "年假申请说明：" + "办理时应确认代理人安排，" * 65 + "最终由主管审核通过。"
         status, body = request("POST", "/internal/query", query_payload(documents=[source("long", sentence)]))
@@ -389,7 +422,7 @@ class ServiceTests(unittest.TestCase):
         ]
         for error in errors:
             with self.subTest(error=type(error).__name__), patch.dict(os.environ, {"LLM_API_KEY": "secret-in-message"}), \
-                    patch("urllib.request.OpenerDirector.open", side_effect=error):
+                    patch("app.ChatOpenAI", side_effect=error):
                 status, body = request("POST", "/internal/query", query_payload())
                 self.assertEqual(status, 502)
                 self.assertNotIn("answer", body)
@@ -397,24 +430,166 @@ class ServiceTests(unittest.TestCase):
 
     def test_invalid_gateway_configuration_returns_502(self):
         for url in ("https://[broken", "file:///tmp/model", "http://localhost:99999", "https://user:secret@host/v1"):
-            with self.subTest(url=url), patch.dict(os.environ, {"LLM_API_KEY": "test-key", "LLM_BASE_URL": url}):
+            with self.subTest(url=url), patch.dict(os.environ, {"LLM_API_KEY": "test-key", "LLM_BASE_URL": url}), \
+                    patch("app.ChatOpenAI", side_effect=AssertionError("must not build a client for an invalid url")):
                 status, body = request("POST", "/internal/query", query_payload())
                 self.assertEqual(status, 502)
                 self.assertNotIn("secret", json.dumps(body))
 
     def test_provider_invalid_output_and_citations_rejected(self):
-        for output in (b"not json", b"{}", json.dumps({"choices": [{"message": {"content": "Answer [99]"}}]}).encode(),
-                       json.dumps({"choices": [{"message": {"content": "Answer without references"}}]}).encode()):
-            with patch.dict(os.environ, {"LLM_API_KEY": "test-key"}), \
-                    patch("urllib.request.OpenerDirector.open", return_value=io.BytesIO(output)):
+        for answer in ("", "   ", "Answer [99]", "Answer without references", ["not", "text"]):
+            client = MagicMock()
+            client.invoke.return_value.content = answer
+            with self.subTest(answer=answer), patch.dict(os.environ, {"LLM_API_KEY": "test-key"}), \
+                    patch("app.ChatOpenAI", return_value=client):
                 self.assertEqual(request("POST", "/internal/query", query_payload())[0], 502)
 
     def test_no_match_does_not_call_provider(self):
         with patch.dict(os.environ, {"LLM_API_KEY": "test-key"}), \
-                patch("urllib.request.OpenerDirector.open", side_effect=AssertionError("must not call provider")):
+                patch("app.ChatOpenAI", side_effect=AssertionError("must not call provider")):
             status, body = request("POST", "/internal/query", query_payload(documents=[]))
             self.assertEqual(status, 200)
             self.assertEqual(body["citations"], [])
+
+
+class IndexCacheTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="knobase-index-")
+        self.addCleanup(self.directory.cleanup)
+        self.environment = patch.dict(os.environ, {"LLM_API_KEY": "", "RAG_INDEX_PATH": self.index_path()})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        release_index(self)
+        self.leave = SourceDocument(id="leave", name="leave.txt",
+                                    content="员工每年享有10天带薪年假。申请年假须提前3个工作日提交。", kbId="kb")
+        self.expense = SourceDocument(id="expense", name="expense.txt", content="差旅报销必须提供发票，上限500元。", kbId="kb")
+        self.request = QueryRequest(question="年假怎么申请", documents=[self.leave, self.expense], chunkSize=CHUNK_SIZE)
+
+    def index_path(self):
+        return os.path.join(self.directory.name, "retrieval.db")
+
+    def test_unchanged_documents_are_segmented_once(self):
+        with patch("app.chunk_document", wraps=chunk_document) as splitter:
+            cold = document_units(self.request)
+            warm = document_units(self.request)
+        self.assertEqual(splitter.call_count, len(self.request.documents))
+        self.assertEqual(cold, warm)
+        cached_chunks, cached_counts = warm
+        self.assertEqual([tokenize(chunk.text) for chunk in cached_chunks], cached_counts)
+
+    def test_edited_document_cannot_serve_stale_chunks(self):
+        original, _ = document_units(self.request)
+        edited = self.request.model_copy(update={"documents": [self.leave, self.expense.model_copy(
+            update={"content": "差旅报销必须提供发票。上限500元。另需附上行程单，逾期单据不予受理。"})]})
+        edited_chunks, _ = document_units(edited)
+        self.assertIn("行程单", edited_chunks[1].text)
+        replayed, _ = document_units(self.request)
+        self.assertEqual(replayed, original)
+        self.assertEqual(index_store().stats()["documents"], 2)
+
+    def test_chunk_size_is_part_of_the_cache_key(self):
+        document_units(self.request)
+        with patch("app.chunk_document", wraps=chunk_document) as splitter:
+            document_units(self.request.model_copy(update={"chunkSize": 128}))
+            document_units(self.request)
+        self.assertEqual(splitter.call_count, len(self.request.documents))
+        self.assertEqual(index_store().stats()["chunks"], 4)
+
+    def test_unusable_index_degrades_to_memory_scoring(self):
+        self.environment.stop()
+        with patch.dict(os.environ, {"LLM_API_KEY": "", "RAG_INDEX_PATH": self.directory.name}):
+            status, body = request("POST", "/internal/query", query_payload())
+            health = request("GET", "/health")[1]
+        self.assertEqual(status, 200)
+        self.assertEqual(body["citations"][0]["documentId"], "leave")
+        self.assertEqual(health["index"], "unavailable")
+
+
+class EmbeddingTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix="knobase-index-")
+        self.addCleanup(self.directory.cleanup)
+        self.calls: list[dict] = []
+        self.environment = patch.dict(os.environ, {"LLM_API_KEY": "", "RAG_INDEX_PATH": self.index_path()})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        release_index(self)
+        self.documents = [
+            SourceDocument(id="leave", name="leave.txt", content="员工每年享有10天带薪年假。", kbId="kb"),
+            SourceDocument(id="expense", name="expense.txt", content="差旅报销必须提供发票。", kbId="kb"),
+            SourceDocument(id="tech", name="tech.txt", content="技术团队使用 Python 和 Java 开发。", kbId="kb"),
+        ]
+
+    def index_path(self):
+        return os.path.join(self.directory.name, "retrieval.db")
+
+    def payload(self, question="如何申请年假？"):
+        return query_payload(question=question, documents=[document.model_dump() for document in self.documents])
+
+    def serve(self, vectors):
+        calls = self.calls
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                calls.append({"authorization": self.headers.get("Authorization"), "model": payload["model"],
+                              "input": payload["input"]})
+                body = json.dumps({"data": [{"index": index, "embedding": vectors.get(text, [0.0, 1.0])}
+                                            for index, text in enumerate(payload["input"])]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join(timeout=2)))
+        return f"http://127.0.0.1:{server.server_port}/v1"
+
+    def configure(self, base_url):
+        return patch.dict(os.environ, {"EMBEDDING_API_KEY": "vec-secret", "EMBEDDING_MODEL_ID": "vec-model",
+                                       "EMBEDDING_BASE_URL": base_url})
+
+    def test_vectors_drive_the_semantic_order_and_stay_cached(self):
+        chunk_text = chunk_document(self.documents[0], CHUNK_SIZE)[0].text
+        url = self.serve({chunk_text: [1.0, 0.0], "如何申请年假？": [1.0, 0.0]})
+        with self.configure(url):
+            first = request("POST", "/internal/query", self.payload())[1]
+            second = request("POST", "/internal/query", self.payload())[1]
+            health = request("GET", "/health")[1]
+        self.assertEqual(first["citations"][0]["documentId"], "leave")
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[0]["model"], "vec-model")
+        self.assertEqual(self.calls[0]["authorization"], "Bearer vec-secret")
+        self.assertEqual(second["citations"], first["citations"])
+        self.assertEqual(health["semantic"], "gateway")
+        self.assertGreater(int(health["vectorCache"]), 0)
+        self.assertNotIn("vec-secret", json.dumps(health))
+
+    def test_calibrated_vectors_recall_without_lexical_evidence(self):
+        with self.configure(self.serve({"员工每年享有10天带薪年假。": [1.0, 0.0], "flibber lab": [1.0, 0.0]})):
+            status, body = request("POST", "/internal/query", self.payload("flibber lab"))
+        self.assertEqual(status, 200)
+        self.assertEqual(body["citations"][0]["documentId"], "leave")
+        with self.configure("http://127.0.0.1:1/v1"):
+            self.assertEqual(request("POST", "/internal/query", self.payload("wubble frock"))[1]["citations"], [])
+
+    def test_weak_vectors_still_refuse(self):
+        with self.configure(self.serve({"flibber lab": [1.0, 0.0]})):
+            status, body = request("POST", "/internal/query", self.payload("flibber lab"))
+        self.assertEqual(status, 200)
+        self.assertEqual(body["citations"], [])
+
+    def test_gateway_failure_falls_back_to_lexical_retrieval(self):
+        with self.configure("http://127.0.0.1:1/v1"):
+            status, body = request("POST", "/internal/query", self.payload())
+        self.assertEqual(status, 200)
+        self.assertEqual(body["citations"][0]["documentId"], "leave")
 
 
 if __name__ == "__main__":

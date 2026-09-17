@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import io
 import json
 import math
 import os
 import re
+import sqlite3
+import threading
 import time
 import logging
 import unicodedata
@@ -16,14 +19,17 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
+from urllib.error import URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from docx import Document as WordDocument
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from langchain_openai import ChatOpenAI
-from llama_index.core.node_parser import SentenceSplitter
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pypdf import PdfReader
+import numpy as np
 
 load_dotenv()
 
@@ -35,6 +41,22 @@ MAX_TEXT_CHARS = 20 * 1024 * 1024
 CHUNK_SIZE = 650
 CHUNK_OVERLAP = 90
 CONTEXT_BUDGET = 5000
+# 潜在语义分解按请求规模增长，超过上限就退回纯词面链路，避免不可控的延迟与内存。
+SEMANTIC_DIMS = 20
+SEMANTIC_WEIGHT = 0.5
+SEMANTIC_MAX_CHUNKS = 400
+SEMANTIC_MAX_TERMS = 4000
+# 向量缓存与分段结果落在本地 SQLite，超过上限按写入顺序淘汰最旧的片段。
+INDEX_MAX_CHUNK_ROWS = 50000
+EMBEDDING_BATCH_SIZE = 64
+EMBEDDING_TIMEOUT_SECONDS = 15
+EMBEDDING_WEIGHT = 1.0
+# 只有模型校准过的向量相似度才能在零词面证据时单独召回；LSI 分数量级随语料规模漂移，不享有这个权利。
+VECTOR_EVIDENCE_FLOOR = 0.35
+# 融合名次为主，词面覆盖与短语命中为辅；语义路加入后覆盖率不再是必要条件。
+RERANK_FUSED = 0.70
+RERANK_COVERAGE = 0.22
+RERANK_PHRASE = 0.08
 LOCAL_MODEL = "本地检索引擎"
 NO_MATCH = (
     "抱歉，在当前所选范围的资料中没有找到与这个问题足够相关的内容，"
@@ -137,7 +159,15 @@ def gateway_config() -> GatewayConfig:
 @app.get("/health")
 def health() -> dict[str, str]:
     config = gateway_config()
-    return {"status": "up", "mode": config.mode, "model": config.model_name}
+    store = index_store()
+    stats = store.stats()
+    return {
+        "status": "up", "mode": config.mode, "model": config.model_name,
+        "index": "unavailable" if store.disabled else "ready",
+        "indexedChunks": str(stats["chunks"]), "indexedDocuments": str(stats["documents"]),
+        "vectorCache": str(stats["vectors"]),
+        "semantic": "gateway" if embedding_config() else "lsi",
+    }
 
 
 def validate_text(text: str) -> str:
@@ -229,37 +259,70 @@ class Chunk:
     ordinal: int
 
 
-def chunk_pages(content: str, chunk_size: int) -> list[tuple[int, str, int, int]]:
-    """Page-aware segmentation shared by retrieval and the reported chunk count."""
-    splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=min(CHUNK_OVERLAP, chunk_size // 4))
-    results: list[tuple[int, str, int, int]] = []
-    for page_number, page_text in enumerate(content.split("\f"), start=1):
-        page_text_stripped = page_text.strip()
-        if not page_text_stripped:
+def _sentence_spans(page: str) -> list[tuple[int, int]]:
+    """Sentence spans tiling the page, so segmentation never drops a character."""
+    matches = [(match.start(), match.end()) for match in SENTENCES.finditer(page)]
+    if not matches:
+        return [(0, len(page))] if page.strip() else []
+    spans = [(start, matches[index + 1][0]) for index, (start, _) in enumerate(matches[:-1])]
+    spans.append((matches[-1][0], len(page)))
+    return [span for span in spans if page[span[0]:span[1]].strip()]
+
+
+def _unit_spans(page: str, chunk_size: int, overlap: int) -> list[tuple[int, int]]:
+    """Sentences clipped to the budget; an oversized sentence becomes overlapping slices."""
+    units: list[tuple[int, int]] = []
+    for start, end in _sentence_spans(page):
+        if end - start <= chunk_size:
+            units.append((start, end))
             continue
-        text_chunks = splitter.split_text(page_text_stripped)
-        # split_text emits sequential overlapping pieces; search forward from the previous
-        # match so repeated sentences (common in policy text) cannot rewind the offsets.
-        cursor = 0
-        spans: list[tuple[int, int]] = []
-        for text in text_chunks:
-            start = page_text_stripped.find(text, cursor)
-            if start < 0:
-                start = cursor
-            spans.append((start, min(start + len(text), len(page_text_stripped))))
-            cursor = start + 1
-        if spans and text_chunks[-1].strip():
-            # The final piece always reaches the end of the page.
-            spans[-1] = (spans[-1][0], len(page_text_stripped))
-        for text, (start, end) in zip(text_chunks, spans):
-            if text.strip():
-                results.append((page_number, text, start, end))
+        step = max(1, chunk_size - overlap)
+        cursor = start
+        while end - cursor > chunk_size:
+            units.append((cursor, cursor + chunk_size))
+            cursor += step
+        units.append((cursor, end))
+    return units
+
+
+def _pack_spans(units: list[tuple[int, int]], chunk_size: int, overlap: int) -> list[tuple[int, int]]:
+    """Greedy sentence packing; the next chunk restarts inside the previous chunk's tail sentence."""
+    chunks: list[tuple[int, int]] = []
+    index = 0
+    while index < len(units):
+        last = index
+        while last + 1 < len(units) and units[last + 1][1] - units[index][0] <= chunk_size:
+            last += 1
+        chunks.append((units[index][0], units[last][1]))
+        tail = last - 1
+        if tail <= index:  # 单句成块时没有句级重叠可用，只能与下一块首尾相接
+            index = last + 1
+            continue
+        budget = max(overlap, units[tail][1] - units[tail][0])
+        carry = tail
+        while carry > index + 1 and units[tail][1] - units[carry - 1][0] <= budget:
+            carry -= 1
+        index = carry
+    return chunks
+
+
+def chunk_pages(content: str, chunk_size: int) -> list[tuple[int, str, int, int]]:
+    """Page-aware segmentation shared by retrieval and the reported chunk count. chunk_size counts characters."""
+    overlap = min(CHUNK_OVERLAP, chunk_size // 4)
+    results: list[tuple[int, str, int, int]] = []
+    for page_number, raw_page in enumerate(content.split("\f"), start=1):
+        page = raw_page.strip()
+        if not page:
+            continue
+        units = _unit_spans(page, chunk_size, overlap)
+        results.extend((page_number, page[start:end], start, end)
+                       for start, end in _pack_spans(units, chunk_size, overlap))
     return results
 
 
 def chunk_document(document: SourceDocument, chunk_size: int) -> list[Chunk]:
-    return [Chunk(document.id, document.name, page, text, start, end,
-                  document.content.split("\f")[page - 1].strip(), index)
+    pages = [page.strip() for page in document.content.split("\f")]
+    return [Chunk(document.id, document.name, page, text, start, end, pages[page - 1], index)
             for index, (page, text, start, end) in enumerate(chunk_pages(document.content, chunk_size))]
 
 
@@ -330,6 +393,276 @@ class RankedChunk:
     score: float
 
 
+DEFAULT_INDEX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".index", "retrieval.db")
+
+
+class LocalIndex:
+    """Segmentation and vector cache. An unavailable cache slows retrieval down but never fails a query."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.lock = threading.Lock()
+        self.connection: sqlite3.Connection | None = None
+        self.disabled = False
+
+    def _connect(self) -> sqlite3.Connection:
+        if self.connection is None:
+            parent = os.path.dirname(self.path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            self.connection = sqlite3.connect(self.path, check_same_thread=False)
+            self.connection.executescript(
+                "CREATE TABLE IF NOT EXISTS chunk("
+                "document_id TEXT NOT NULL, chunk_size INTEGER NOT NULL, ordinal INTEGER NOT NULL,"
+                "page INTEGER NOT NULL, start_offset INTEGER NOT NULL, end_offset INTEGER NOT NULL,"
+                "content_hash TEXT NOT NULL, text TEXT NOT NULL, tokens TEXT NOT NULL,"
+                "PRIMARY KEY(document_id, chunk_size, ordinal));"
+                "CREATE TABLE IF NOT EXISTS vector("
+                "model TEXT NOT NULL, text_hash TEXT NOT NULL, dims INTEGER NOT NULL, data BLOB NOT NULL,"
+                "PRIMARY KEY(model, text_hash));"
+            )
+        return self.connection
+
+    def _run(self, action):
+        """Run one cache action, disabling the cache for the rest of the process on failure."""
+        if self.disabled:
+            return None
+        with self.lock:
+            try:
+                return action(self._connect())
+            except (sqlite3.Error, OSError) as error:
+                self.disabled = True
+                logger.warning("检索索引不可用，本次起改为内存计算：%s", type(error).__name__)
+                return None
+
+    def chunks(self, document_id: str, content_hash: str, chunk_size: int) -> list[tuple[int, int, int, int, str, dict[str, int]]] | None:
+        return self._run(lambda connection: [
+            (ordinal, page, start, end, text, json.loads(tokens))
+            for ordinal, page, start, end, text, tokens in connection.execute(
+                "SELECT ordinal, page, start_offset, end_offset, text, tokens FROM chunk"
+                " WHERE document_id = ? AND chunk_size = ? AND content_hash = ? ORDER BY ordinal",
+                (document_id, chunk_size, content_hash),
+            )
+        ] or None)
+
+    def put_chunks(self, document_id: str, content_hash: str, chunk_size: int,
+                   entries: list[tuple[Chunk, Counter[str]]]) -> None:
+        def action(connection: sqlite3.Connection) -> None:
+            connection.execute("DELETE FROM chunk WHERE document_id = ? AND chunk_size = ?",
+                               (document_id, chunk_size))
+            connection.executemany(
+                "INSERT INTO chunk VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(document_id, chunk_size, chunk.ordinal, chunk.page, chunk.start, chunk.end, content_hash,
+                  chunk.text, json.dumps(dict(count), ensure_ascii=False)) for chunk, count in entries],
+            )
+            oversized = connection.execute("SELECT count(*) FROM chunk").fetchone()[0] > INDEX_MAX_CHUNK_ROWS
+            if oversized:
+                connection.execute(
+                    "DELETE FROM chunk WHERE rowid NOT IN (SELECT rowid FROM chunk ORDER BY rowid DESC LIMIT ?)",
+                    (INDEX_MAX_CHUNK_ROWS,),
+                )
+            connection.commit()
+        self._run(action)
+
+    def vector(self, model: str, text: str) -> list[float] | None:
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        row = self._run(lambda connection: connection.execute(
+            "SELECT dims, data FROM vector WHERE model = ? AND text_hash = ?", (model, digest)).fetchone())
+        if not row:
+            return None
+        dims, data = row
+        values = np.frombuffer(data, dtype=np.float32)
+        return [float(value) for value in values] if values.size == dims else None
+
+    def put_vector(self, model: str, text: str, vector: list[float]) -> None:
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        payload = np.asarray(vector, dtype=np.float32).tobytes()
+        self._run(lambda connection: (
+            connection.execute("INSERT OR REPLACE INTO vector VALUES (?, ?, ?, ?)",
+                               (model, digest, len(vector), payload)),
+            connection.commit(),
+        ))
+
+    def close(self) -> None:
+        with self.lock:
+            if self.connection is not None:
+                self.connection.close()
+                self.connection = None
+
+    def stats(self) -> dict[str, int]:
+        counts = self._run(lambda connection: (
+            connection.execute("SELECT count(*) FROM chunk").fetchone()[0],
+            connection.execute("SELECT count(DISTINCT document_id) FROM chunk").fetchone()[0],
+            connection.execute("SELECT count(*) FROM vector").fetchone()[0],
+        ))
+        if not counts:
+            return {"chunks": 0, "documents": 0, "vectors": 0}
+        return {"chunks": counts[0], "documents": counts[1], "vectors": counts[2]}
+
+
+_indexes: dict[str, LocalIndex] = {}
+_indexes_lock = threading.Lock()
+
+
+def index_store() -> LocalIndex:
+    path = os.getenv("RAG_INDEX_PATH", "").strip() or DEFAULT_INDEX_PATH
+    with _indexes_lock:
+        if path not in _indexes:
+            _indexes[path] = LocalIndex(path)
+        return _indexes[path]
+
+
+@dataclass(frozen=True)
+class EmbeddingConfig:
+    key: str
+    base_url: str
+    model_id: str
+
+
+def embedding_config() -> EmbeddingConfig | None:
+    """Embeddings are optional: without a key or a model id retrieval stays on the lexical + LSI path."""
+    key = os.getenv("EMBEDDING_API_KEY", "").strip()
+    model_id = os.getenv("EMBEDDING_MODEL_ID", "").strip()
+    if not key or not model_id:
+        return None
+    base_url = (os.getenv("EMBEDDING_BASE_URL", "").strip() or "https://api.openai.com/v1").rstrip("/")
+    if not base_url_is_usable(base_url):
+        logger.warning("EMBEDDING_BASE_URL 配置无效，语义召回退回 LSI")
+        return None
+    return EmbeddingConfig(key=key, base_url=base_url, model_id=model_id)
+
+
+def request_embeddings(texts: list[str], config: EmbeddingConfig) -> list[list[float]] | None:
+    payload = json.dumps({"model": config.model_id, "input": texts, "encoding_format": "float"}).encode()
+    request = Request(f"{config.base_url}/embeddings", data=payload, method="POST",
+                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {config.key}"})
+    try:
+        with urlopen(request, timeout=EMBEDDING_TIMEOUT_SECONDS) as response:
+            body = json.loads(response.read())
+    except (URLError, OSError, ValueError) as error:
+        logger.warning("向量网关调用失败：%s", type(error).__name__)
+        return None
+    rows = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(rows, list) or len(rows) != len(texts):
+        return None
+    vectors: list[list[float]] = []
+    for row in rows:
+        values = row.get("embedding") if isinstance(row, dict) else None
+        if not isinstance(values, list) or not values or not all(isinstance(value, (int, float)) for value in values):
+            return None
+        vectors.append([float(value) for value in values])
+    dims = {len(vector) for vector in vectors}
+    return vectors if len(dims) == 1 else None
+
+
+def embedding_matrix(texts: list[str], config: EmbeddingConfig) -> np.ndarray | None:
+    """Unit-norm embeddings for these texts, served from the local cache and backfilled in batches."""
+    store = index_store()
+    vectors: list[list[float] | None] = [store.vector(config.model_id, text) for text in texts]
+    missing = [index for index, vector in enumerate(vectors) if vector is None]
+    for start in range(0, len(missing), EMBEDDING_BATCH_SIZE):
+        batch = missing[start:start + EMBEDDING_BATCH_SIZE]
+        fetched = request_embeddings([texts[index] for index in batch], config)
+        if fetched is None or len(fetched) != len(batch):
+            return None
+        for index, vector in zip(batch, fetched):
+            vectors[index] = vector
+            store.put_vector(config.model_id, texts[index], vector)
+    matrix = np.asarray(vectors, dtype=float)
+    if not np.isfinite(matrix).all():
+        return None
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    if (norms <= 0).any():
+        return None
+    return matrix / norms
+
+
+def dense_ranking(request: QueryRequest, query_tokens: Counter[str], chunks: list[Chunk],
+                  counts: list[Counter[str]]) -> tuple[list[int], float, bool]:
+    """Ordered candidate indices with their top score; the third value says whether it is calibrated."""
+    config = embedding_config()
+    if config:
+        matrix = embedding_matrix([chunk.text for chunk in chunks] + [request.question], config)
+        if matrix is not None and matrix.shape[0] == len(chunks) + 1:
+            query, documents = matrix[-1], matrix[:-1]
+            similarities = documents @ query
+            order = [int(index) for index in np.argsort(-similarities, kind="stable")]
+            return order, float(similarities[order[0]]), True
+        logger.warning("向量检索不可用，本次退回潜在语义分解")
+    order = [index for index, _ in semantic_similarity(query_tokens, counts)]
+    return order, 0.0, False
+
+
+def semantic_similarity(query_tokens: Counter[str], counts: list[Counter[str]]) -> list[tuple[int, float]]:
+    """LSI over this request's chunk/term matrix: reaches chunks that share no surface term."""
+    if len(counts) < 3 or len(counts) > SEMANTIC_MAX_CHUNKS:
+        return []
+    frequency: Counter[str] = Counter()
+    for count in counts:
+        frequency.update(count.keys())
+    terms = sorted(term for term, occurring in frequency.items() if occurring >= 2)[:SEMANTIC_MAX_TERMS]
+    if not terms:
+        return []
+    position = {term: index for index, term in enumerate(terms)}
+    matrix = np.zeros((len(counts), len(terms)))
+    for row, count in enumerate(counts):
+        for term, value in count.items():
+            column = position.get(term)
+            if column is not None:
+                matrix[row, column] = 1 + math.log(value)
+    document_frequency = (matrix > 0).sum(axis=0)
+    idf = np.log((matrix.shape[0] + 1) / (document_frequency + 1)) + 1
+    weighted = matrix * idf
+    norms = np.linalg.norm(weighted, axis=1, keepdims=True)
+    try:
+        left, singular, right = np.linalg.svd(weighted / np.maximum(norms, 1e-9), full_matrices=False)
+    except np.linalg.LinAlgError:
+        return []
+    dims = min(SEMANTIC_DIMS, left.shape[1])
+    axes = left[:, :dims] * singular[:dims]
+    axes = axes / np.maximum(np.linalg.norm(axes, axis=1, keepdims=True), 1e-9)
+    query = np.zeros(len(terms))
+    for term, value in query_tokens.items():
+        column = position.get(term)
+        if column is not None:
+            query[column] = (1 + math.log(value)) * term_weight(term)
+    projected = (query * idf) @ right[:dims].T
+    strength = float(np.linalg.norm(projected))
+    if strength == 0 or not math.isfinite(strength):
+        return []
+    similarities = axes @ (projected / strength)
+    return [(index, float(similarities[index]))
+            for index in np.argsort(-similarities, kind="stable")]
+
+
+SEGMENTER_VERSION = 1
+
+
+def chunking_key(document: SourceDocument, chunk_size: int) -> str:
+    # The segmenter version belongs in the key: upgrading the algorithm must invalidate stored rows.
+    return hashlib.sha256(f"{SEGMENTER_VERSION}|{chunk_size}|{document.content}".encode()).hexdigest()
+
+
+def document_units(request: QueryRequest) -> tuple[list[Chunk], list[Counter[str]]]:
+    """Chunks and token counts, reused from the local index so a query never re-segments unchanged text."""
+    store = index_store()
+    chunks: list[Chunk] = []
+    counts: list[Counter[str]] = []
+    for document in request.documents:
+        digest = chunking_key(document, request.chunkSize)
+        cached = store.chunks(document.id, digest, request.chunkSize)
+        if cached is None:
+            entries = [(chunk, tokenize(chunk.text)) for chunk in chunk_document(document, request.chunkSize)]
+            store.put_chunks(document.id, digest, request.chunkSize, entries)
+        else:
+            pages = [page.strip() for page in document.content.split("\f")]
+            entries = [(Chunk(document.id, document.name, page, text, start, end, pages[page - 1], ordinal),
+                        Counter(tokens)) for ordinal, page, start, end, text, tokens in cached]
+        chunks.extend(chunk for chunk, _ in entries)
+        counts.extend(count for _, count in entries)
+    return chunks, counts
+
+
 def rank_chunks(request: QueryRequest) -> list[RankedChunk]:
     """Full relevance-ordered candidates, before dedupe and context budgeting."""
     if sum(len(document.content) for document in request.documents) > MAX_TEXT_CHARS:
@@ -337,10 +670,9 @@ def rank_chunks(request: QueryRequest) -> list[RankedChunk]:
     query_tokens = tokenize(request.question)
     if not query_tokens:
         return []
-    chunks = [chunk for document in request.documents for chunk in chunk_document(document, request.chunkSize)]
+    chunks, counts = document_units(request)
     if not chunks:
         return []
-    counts = [tokenize(chunk.text) for chunk in chunks]
     frequency: Counter[str] = Counter()
     for count in counts:
         frequency.update(count.keys())
@@ -365,20 +697,30 @@ def rank_chunks(request: QueryRequest) -> list[RankedChunk]:
         norm = math.sqrt(sum(weight * weight for weight in vector.values())) or 1
         bm25[index] = bm_score
         cosine[index] = sum(query_vector.get(term, 0) * weight for term, weight in sorted(vector.items())) / (query_norm * norm)
-    if not bm25:
-        return []
-    bm_order = sorted(bm25, key=lambda index: (-bm25[index], index))
+    dense: list[int] = []
+    dense_top = 0.0
+    calibrated = False
     if request.hybridSearch:
-        cosine_order = sorted(cosine, key=lambda index: (-cosine[index], index))
-        fused: Counter[int] = Counter()
-        for order in (bm_order, cosine_order):
-            for rank, index in enumerate(order, start=1):
-                fused[index] += 1 / (60 + rank)
-        maximum = max(fused.values())
-        base_scores = {index: score / maximum for index, score in fused.items()}
-    else:
+        dense, dense_top, calibrated = dense_ranking(request, query_tokens, chunks, counts)
+    if not bm25:
+        # 词面完全没有证据时，只有模型校准过的向量相似度还能单独召回，LSI 分数不配。
+        if not (calibrated and dense_top >= VECTOR_EVIDENCE_FLOOR):
+            return []
+    bm_order = sorted(bm25, key=lambda index: (-bm25[index], index))
+    if not request.hybridSearch:
         maximum = max(bm25.values())
         base_scores = {index: score / maximum for index, score in bm25.items()}
+    else:
+        cosine_order = sorted(cosine, key=lambda index: (-cosine[index], index))
+        orders: list[tuple[list[int], float]] = [(bm_order, 1.0), (cosine_order, 1.0)]
+        if dense:
+            orders.append((dense, EMBEDDING_WEIGHT if calibrated else SEMANTIC_WEIGHT))
+        fused: Counter[int] = Counter()
+        for order, weight in orders:
+            for rank, index in enumerate(order, start=1):
+                fused[index] += weight / (60 + rank)
+        maximum = max(fused.values())
+        base_scores = {index: score / maximum for index, score in fused.items()}
     query_terms = meaningful_terms(query_tokens) or set(query_tokens)
     phrases = [match.group() for match in TOKEN_PATTERN.finditer(FILLER.sub(" ", request.question.lower()))
                if len(match.group()) >= 2]
@@ -388,7 +730,7 @@ def rank_chunks(request: QueryRequest) -> list[RankedChunk]:
         if request.reranking:
             compact_text = chunks[index].text.lower()
             phrase_score = sum(phrase in compact_text for phrase in phrases) / max(1, len(phrases))
-            score = 0.70 * score + 0.22 * coverage + 0.08 * phrase_score
+            score = RERANK_FUSED * score + RERANK_COVERAGE * coverage + RERANK_PHRASE * phrase_score
         score = min(1.0, max(0.0, score))
         ranked.append(RankedChunk(chunks[index], round(score, 4)))
     ranked.sort(key=lambda item: (-item.score, item.chunk.document_id, item.chunk.page, item.chunk.ordinal))
@@ -476,6 +818,23 @@ def local_answer(question: str, selected: list[RankedChunk]) -> str:
     )
 
 
+def base_url_is_usable(base_url: str) -> bool:
+    try:
+        parsed = urlparse(base_url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+        return False
+    return parsed.port is None or 1 <= parsed.port <= 65535
+
+
+def require_usable_base_url(base_url: str) -> str:
+    """Validate the gateway address before any client is built, so a bad config never reaches the network."""
+    if not base_url_is_usable(base_url):
+        raise HTTPException(502, "模型网关地址配置无效，请检查 LLM_BASE_URL（需为 http/https 且不含凭据）")
+    return base_url
+
+
 def call_provider(request: QueryRequest, selected: list[RankedChunk], config: GatewayConfig) -> str:
     context = "\n\n".join(context_block(item.chunk, index) for index, item in enumerate(selected, start=1))
     system_prompt = (
@@ -504,9 +863,10 @@ def call_provider(request: QueryRequest, selected: list[RankedChunk], config: Ga
     except ValueError:
         timeout = 25.0
     try:
+        base_url = require_usable_base_url(config.base_url)
         llm = ChatOpenAI(
             api_key=config.key,
-            base_url=config.base_url,
+            base_url=base_url,
             model=config.model_id,
             temperature=request.temperature,
             max_tokens=1200,
@@ -524,7 +884,7 @@ def call_provider(request: QueryRequest, selected: list[RankedChunk], config: Ga
     except HTTPException:
         raise
     except Exception as error:
-        logger.warning("LLM call failed: %s: %s", type(error).__name__, str(error)[:500], exc_info=error)
+        logger.warning("LLM call failed: %s: %s", type(error).__name__, str(error)[:200])
         if isinstance(error, (TimeoutError, OSError)):
             raise HTTPException(502, "无法连接模型服务或请求超时，请稍后重试") from None
         raise HTTPException(502, "模型服务返回了无效内容或无效引用，请稍后重试") from None

@@ -40,7 +40,7 @@ public class WorkspaceService {
 
     public Health health() {
         var health = ai.health();
-        return new Health("up", "up", health.up() ? "up" : "down", health.mode());
+        return new Health("up", "up", health.up() ? "up" : "down", health.mode(), health.index(), health.chunks());
     }
 
     @Transactional

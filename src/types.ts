@@ -7,5 +7,5 @@ export type Message = { id: string; role: 'user' | 'assistant'; content: string;
 export type Session = { id: string; title: string; createdAt: string; messages: Message[] };
 export type Settings = { model: string; temperature: number; topK: number; chunkSize: number; hybridSearch: boolean; reranking: boolean; workspaceName: string };
 export type Bootstrap = { knowledgeBases: KnowledgeBase[]; documents: Document[]; activities: Activity[]; sessions: Session[]; settings: Settings; stats: { queries: number; queryChange: number; latency: number; successRate: number; trend: { date: string; queries: number; tokens: number }[] }; mode: 'local' | 'connected' };
-export type Health = { status: string; business: string; ai: string; mode: 'local' | 'connected' };
+export type Health = { status: string; business: string; ai: string; mode: 'local' | 'connected'; aiIndex: string; aiChunks: number };
 export type ChatResponse = { sessionId: string; message: Message; mode: 'local' | 'connected' };

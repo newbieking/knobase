@@ -1,0 +1,192 @@
+{"id":"prod-entry-01","question":"知序的主要入口有哪些？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-guide"],"passages":["主要入口包括总览、知识库、智能问答、对话历史和工作空间设置"]}}
+{"id":"prod-entry-02","question":"我刚拿到这个系统，从哪里开始用？","kbId":"kb-product","kind":"paraphrase","gold":{"docs":["doc-product-guide"],"passages":["第一步创建知识库并填写名称、描述、标签和可见范围"]}}
+{"id":"prod-upload-limit-01","question":"上传文件有大小限制吗？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-guide","doc-product-faq"],"passages":["单个文件不超过 10MB","每个文件最多 10MB"]}}
+{"id":"prod-upload-limit-02","question":"一个 20MB 的 PDF 能不能直接传上去？","kbId":"kb-product","kind":"paraphrase","gold":{"docs":["doc-product-faq"],"passages":["每个文件最多 10MB"]}}
+{"id":"prod-formats-01","question":"支持哪些文件格式？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-faq"],"passages":["PDF、DOCX、MD、TXT、CSV"]}}
+{"id":"prod-formats-02","question":"我能不能导入 PPT？","kbId":"kb-product","kind":"paraphrase","gold":{"docs":["doc-product-faq"],"passages":["PDF、DOCX、MD、TXT、CSV"]}}
+{"id":"prod-v24-01","question":"v2.4 版本更新了哪些能力？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-v24"],"passages":["本次更新的核心是混合检索、结果重排和引用追溯体验"]}}
+{"id":"prod-v24-02","question":"上个版本主要解决了什么问题？","kbId":"kb-product","kind":"paraphrase","gold":{"docs":["doc-product-v24"],"passages":["本次更新的核心是混合检索、结果重排和引用追溯体验"]}}
+{"id":"prod-v24-03","question":"关键词检索和语义检索各自擅长什么？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-v24"],"passages":["关键词检索保留专有名词、版本号和订单编号的精确匹配能力"]}}
+{"id":"prod-topk-01","question":"Top K 设成多少比较合适？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-v24"],"passages":["建议从 5 开始"]}}
+{"id":"prod-topk-02","question":"送入回答上下文的片段数量该怎么调？","kbId":"kb-product","kind":"paraphrase","gold":{"docs":["doc-product-v24"],"passages":["Top K 决定最终送入回答上下文的片段数量"]}}
+{"id":"prod-chunk-01","question":"分段大小推荐初始值是多少？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-v24"],"passages":["推荐以 512 字符作为初始分段值"]}}
+{"id":"prod-cite-01","question":"找不到证据的时候系统会怎么处理？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-v24"],"passages":["无法找到足够证据时应明确说明，不编造公司政策"]}}
+{"id":"prod-hallucination-01","question":"你们会不会担心 AI 编造内容？","kbId":"kb-product","kind":"paraphrase","gold":{"docs":["doc-product-v24"],"passages":["不编造公司政策"]}}
+{"id":"prod-specificity-01","question":"怎样提问才能召回更稳？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-guide"],"passages":["问题越具体，召回结果越稳定"]}}
+{"id":"prod-scan-01","question":"扫描版 PDF 能直接用吗？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-search"],"passages":["扫描 PDF 需要先进行 OCR"]}}
+{"id":"prod-kb-design-01","question":"知识库应该按什么维度来建？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-search"],"passages":["建议按业务主题划分知识库"]}}
+{"id":"prod-kb-design-02","question":"是不是每份文件都单独建一个库比较好？","kbId":"kb-product","kind":"paraphrase","gold":{"docs":["doc-product-search"],"passages":["建议按业务主题划分知识库"]}}
+{"id":"prod-naming-01","question":"文档标题有什么命名建议？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-search"],"passages":["文档标题用“主题 + 版本或日期”"]}}
+{"id":"prod-eval-method-01","question":"评估检索效果要准备多少个问题？","kbId":"kb-product","kind":"numeric","gold":{"docs":["doc-product-search"],"passages":["准备 20 至 50 个真实问题"]}}
+{"id":"prod-download-01","question":"下载下来的文档是什么内容？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-faq"],"passages":["文档下载导出的是提取后的 UTF-8 文本"]}}
+{"id":"prod-reindex-01","question":"改了分段大小之后老文档会自动重切吗？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-faq"],"passages":["保存设置后，对需要调整的文档执行重新索引"]}}
+{"id":"prod-reindex-02","question":"调整了切分参数，之前上传的资料要怎么处理？","kbId":"kb-product","kind":"paraphrase","gold":{"docs":["doc-product-faq"],"passages":["对需要调整的文档执行重新索引"]}}
+{"id":"prod-restart-01","question":"重启服务之后数据会没了吗？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-faq"],"passages":["删除数据库目录会清空数据"]}}
+{"id":"prod-parser-down-01","question":"上传一直失败，先查什么地方？","kbId":"kb-product","kind":"paraphrase","gold":{"docs":["doc-product-faq"],"passages":["再确认本机 Python 解析服务运行于 127.0.0.1:9001"]}}
+{"id":"prod-visibility-01","question":"团队和私有这两个标记代表权限吗？","kbId":"kb-product","kind":"exact","gold":{"docs":["doc-product-guide"],"passages":["“团队”和“私有”用于演示资料分类"]}}
+{"id":"prod-cross-upload-01","question":"上传文件报错了，客服应该怎么跟客户解释？","kbId":null,"kind":"cross_doc","gold":{"docs":["doc-product-faq","doc-support-troubleshoot"],"passages":["再确认本机 Python 解析服务运行于 127.0.0.1:9001","扫描件无可读文本时建议提供文字版"]}}
+{"id":"prod-cross-eval-01","question":"我们想评估问答质量，应该怎么设计问题集和判定标准？","kbId":null,"kind":"cross_doc","gold":{"docs":["doc-product-search","doc-tech-retrieval"],"passages":["准备 20 至 50 个真实问题","评估集应覆盖精确术语、中文语义、跨文档问题与无答案问题"]}}
+{"id":"prod-distractor-topk-01","question":"Top K 设成 30 可以吗？","kbId":null,"kind":"distractor","gold":{"docs":["doc-product-v24","doc-tech-retrieval"],"passages":["建议从 5 开始","需要兼顾召回、上下文长度和延迟"]}}
+{"id":"eng-arch-01","question":"系统整体是怎么分层的？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-architecture"],"passages":["系统采用前端工作台、Java 业务服务、Python AI 服务三层协作"]}}
+{"id":"eng-ports-01","question":"两个后端服务分别跑在哪个端口？","kbId":"kb-engineering","kind":"numeric","gold":{"docs":["doc-tech-architecture"],"passages":["Java 运行在 127.0.0.1:9090，Python 运行在 127.0.0.1:9001"]}}
+{"id":"eng-ports-02","question":"AI 服务的监听地址是什么？","kbId":"kb-engineering","kind":"paraphrase","gold":{"docs":["doc-tech-architecture"],"passages":["Python 运行在 127.0.0.1:9001"]}}
+{"id":"eng-stack-01","question":"业务服务用了哪些技术？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-architecture"],"passages":["业务服务使用 Java 17、Spring Boot 3.4 和 Spring JDBC"]}}
+{"id":"eng-boundary-01","question":"Java 和 Python 的职责怎么划分？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-architecture"],"passages":["Java 管理知识库、文档元数据、设置、会话和活动记录"]}}
+{"id":"eng-timeout-01","question":"查询超时是多少？","kbId":"kb-engineering","kind":"numeric","gold":{"docs":["doc-tech-architecture"],"passages":["查询超时上限为 90 秒"]}}
+{"id":"eng-acl-01","question":"客户端可以自己指定要检索哪些文档吗？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-architecture"],"passages":["客户端不能提交自定义 documents 或 ACL 来覆盖服务端选择"]}}
+{"id":"eng-acl-02","question":"前端能不能把文档列表直接传给检索接口？","kbId":"kb-engineering","kind":"paraphrase","gold":{"docs":["doc-tech-architecture"],"passages":["客户端不能提交自定义 documents 或 ACL"]}}
+{"id":"eng-auth-01","question":"现在这套系统有登录和权限隔离吗？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-architecture"],"passages":["不包含生产级身份认证、SSO 或多租户隔离"]}}
+{"id":"eng-auth-02","question":"能不能直接放到公司内网给大家用？","kbId":"kb-engineering","kind":"paraphrase","gold":{"docs":["doc-tech-architecture"],"passages":["如果部署到多人网络环境，必须另行设计身份认证、资源授权、密钥管理、审计与传输保护"]}}
+{"id":"eng-hybrid-01","question":"混合检索的两条路径分别适合什么场景？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-retrieval"],"passages":["关键词路径适合产品编号、术语和精确短语"]}}
+{"id":"eng-hybrid-02","question":"为什么改个说法就搜不到了，怎么解决？","kbId":"kb-engineering","kind":"paraphrase","gold":{"docs":["doc-tech-retrieval"],"passages":["语义路径适合改写、同义表达与自然语言提问"]}}
+{"id":"eng-rrf-01","question":"两路结果怎么融合排序？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-retrieval"],"passages":["可采用归一化分数或倒数排名融合"]}}
+{"id":"eng-score-01","question":"相关度分数能当成答对概率吗？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-retrieval"],"passages":["不同路径的原始分数不可直接比较"]}}
+{"id":"eng-segment-01","question":"文本分段有什么默认配置？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-retrieval"],"passages":["文本分段以 512 字符作为初始配置"]}}
+{"id":"eng-table-01","question":"表格类资料怎么入库效果更好？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-retrieval"],"passages":["表格数据建议转换成带列名的文本"]}}
+{"id":"eng-local-mode-01","question":"离线演示模式算已经接了向量库吗？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-retrieval"],"passages":["离线演示模式不等同于已接入向量数据库或远程大模型"]}}
+{"id":"eng-status-code-01","question":"接口错误码是怎么约定的？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-api"],"passages":["参数错误返回 400，资源不存在返回 404"]}}
+{"id":"eng-status-code-02","question":"新建和删除资源分别返回什么状态码？","kbId":"kb-engineering","kind":"numeric","gold":{"docs":["doc-tech-api"],"passages":["创建资源成功返回 201，删除成功返回 204"]}}
+{"id":"eng-upload-api-01","question":"上传接口怎么调？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-api"],"passages":["POST /api/documents 使用 multipart/form-data"]}}
+{"id":"eng-chat-api-01","question":"问答接口允许前端传哪些参数？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-api"],"passages":["POST /api/chat 只接收 question、可选 kbId、sessionId 和 model"]}}
+{"id":"eng-settings-range-01","question":"设置里的温度和 Top K 有什么取值范围？","kbId":"kb-engineering","kind":"numeric","gold":{"docs":["doc-tech-api"],"passages":["温度范围 0 至 2，Top K 范围 1 至 50，分段大小范围 128 至 8192"]}}
+{"id":"eng-health-01","question":"健康检查可以随便报已连接吗？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-api"],"passages":["健康检查会实际请求 Python /health，不得把不可用状态包装成已连接"]}}
+{"id":"eng-review-01","question":"代码评审要看哪些点？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-quality"],"passages":["代码评审关注输入校验、参数化 SQL、异常映射"]}}
+{"id":"eng-release-01","question":"发布之前要跑哪些检查？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-quality"],"passages":["发布前执行 Maven package，确认 Java 17 编译与测试通过"]}}
+{"id":"eng-rollback-01","question":"要回滚的话有什么要求？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-quality"],"passages":["回滚应先保留数据库备份和故障日志"]}}
+{"id":"eng-rollback-02","question":"线上出问题了能不能直接清库？","kbId":"kb-engineering","kind":"paraphrase","gold":{"docs":["doc-tech-quality"],"passages":["不能用清空数据库作为常规修复措施"]}}
+{"id":"eng-test-scope-01","question":"自动化测试需要覆盖哪些场景？","kbId":"kb-engineering","kind":"exact","gold":{"docs":["doc-tech-quality"],"passages":["自动化测试覆盖知识库 CRUD、文档级联删除"]}}
+{"id":"eng-latin-01","question":"Which ports do the business and AI services listen on?","kbId":"kb-engineering","kind":"latin","gold":{"docs":["doc-tech-architecture"],"passages":["Java 运行在 127.0.0.1:9090，Python 运行在 127.0.0.1:9001"]}}
+{"id":"eng-latin-02","question":"How is the upload request encoded?","kbId":"kb-engineering","kind":"latin","gold":{"docs":["doc-tech-api"],"passages":["POST /api/documents 使用 multipart/form-data"]}}
+{"id":"pol-leave-01","question":"年假有多少天？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-leave"],"passages":["累计工作已满 1 年不满 10 年，年休假 5 天"]}}
+{"id":"pol-leave-02","question":"我工作满十年了，能休几天？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-leave"],"passages":["年休假 10 天"]}}
+{"id":"pol-leave-03","question":"工龄超过二十年的年假标准是多少？","kbId":"kb-policy","kind":"numeric","gold":{"docs":["doc-policy-leave"],"passages":["已满 20 年，年休假 15 天"]}}
+{"id":"pol-leave-04","question":"年假是按在公司待了几年算，还是按总工作年限算？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-leave"],"passages":["年假标准按累计工作年限计算，不仅按本公司司龄计算"]}}
+{"id":"pol-leave-05","question":"周末和法定节假日算进年假吗？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-leave"],"passages":["法定休假日、休息日不计入年休假天数"]}}
+{"id":"pol-leave-06","question":"工作还不到一年，有年假吗？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-leave"],"passages":["累计工作未满 1 年的员工请向 HR 确认其他假期安排"]}}
+{"id":"pol-apply-01","question":"休年假要提前多久申请？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-leave"],"passages":["员工原则上提前 3 个工作日在系统中提交年假申请"]}}
+{"id":"pol-apply-02","question":"连休一个星期以上需要注意什么？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-leave"],"passages":["连续休假超过 5 个工作日，建议提前两周协调"]}}
+{"id":"pol-apply-03","question":"突然有事当天能不能休？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-leave"],"passages":["紧急情况可以先联系负责人，再补交申请"]}}
+{"id":"pol-sick-01","question":"请病假要交什么材料？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-leave"],"passages":["病假需提交有效医疗证明"]}}
+{"id":"pol-handover-01","question":"休假前工作要怎么交接？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-leave"],"passages":["休假前整理待办事项、客户联系信息和紧急联络方式"]}}
+{"id":"pol-handover-02","question":"放假期间领导还找我处理事情合理吗？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-leave"],"passages":["避免要求员工在年假期间持续在线"]}}
+{"id":"pol-owner-01","question":"休假制度的责任部门是谁？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-leave"],"passages":["制度责任部门为人力资源部"]}}
+{"id":"pol-expense-01","question":"出差回来多久之内要报销？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-expense"],"passages":["差旅结束后 30 天内提交完整报销申请"]}}
+{"id":"pol-expense-02","question":"报销过了期限就一定不能报了吗？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-expense"],"passages":["并非自动失去报销资格"]}}
+{"id":"pol-meal-01","question":"出差吃饭一天能报多少？","kbId":"kb-policy","kind":"numeric","gold":{"docs":["doc-policy-expense"],"passages":["境内差旅餐费补助上限为每人每天 500 元"]}}
+{"id":"pol-meal-02","question":"客户招待时已经管饭了，还能再报餐补吗？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-expense"],"passages":["客户或会务方已统一提供的餐食不得重复报销"]}}
+{"id":"pol-meal-03","question":"出差喝酒的钱能报销吗？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-expense"],"passages":["酒水、个人娱乐和非公务消费不纳入餐补"]}}
+{"id":"pol-traffic-01","question":"坐飞机和高铁有什么舱位要求？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-expense"],"passages":["机票以经济舱、高铁以二等座为原则"]}}
+{"id":"pol-approval-01","question":"报销审批流程是怎样的？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-expense"],"passages":["审批顺序为员工提交、直属负责人确认业务真实性、财务检查票据及额度、出纳安排付款"]}}
+{"id":"pol-approval-02","question":"材料齐全之后财务多久能审完？","kbId":"kb-policy","kind":"numeric","gold":{"docs":["doc-policy-expense"],"passages":["财务通常在 5 个工作日内完成审核"]}}
+{"id":"pol-split-01","question":"把一张大发票拆成几张小的行不行？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-expense"],"passages":["任何人不得拆分订单规避审批"]}}
+{"id":"pol-change-01","question":"临时改行程要怎么处理？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-expense"],"passages":["临时变更行程需及时沟通并补充审批记录"]}}
+{"id":"pol-onboard-01","question":"入职第一天几点到、要做什么？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-onboarding"],"passages":["9:30 到前台报到"]}}
+{"id":"pol-onboard-02","question":"新人的学习计划是怎么安排的？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-onboarding"],"passages":["与导师共同制定 30/60/90 天学习与交付计划"]}}
+{"id":"pol-onboard-03","question":"系统权限怎么申请？能借同事账号用吗？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-onboarding"],"passages":["权限按岗位最小必要原则申请"]}}
+{"id":"pol-onboard-04","question":"试用期多久回顾一次？","kbId":"kb-policy","kind":"numeric","gold":{"docs":["doc-policy-onboarding"],"passages":["试用期内每两周与直属负责人回顾目标进展"]}}
+{"id":"sec-classify-01","question":"数据分几类管理？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-security"],"passages":["数据按公开、内部、敏感和受限四类管理"]}}
+{"id":"sec-classify-02","question":"员工工资条能放进公共知识库吗？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-security"],"passages":["员工薪资、访问密钥和未公开财务数据不能作为通用知识库的演示资料"]}}
+{"id":"sec-leak-01","question":"发现 API Key 泄露了怎么办？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-security"],"passages":["发现凭证泄露应立即撤销并轮换"]}}
+{"id":"sec-leak-02","question":"密钥不小心提交到 Git 里了，删掉那段代码就行吗？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-security"],"passages":["不能仅删除可见文本后继续使用原凭证"]}}
+{"id":"sec-incident-01","question":"出安全事故第一步找谁？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-security"],"passages":["处理安全事件时先报告 IT 与安全负责人"]}}
+{"id":"sec-ai-01","question":"AI 给的内容能直接对外发吗？","kbId":"kb-policy","kind":"exact","gold":{"docs":["doc-policy-security"],"passages":["对外发布的 AI 生成内容需人工核验事实与引用"]}}
+{"id":"sec-private-01","question":"打上私有条目别人就看不到了吗？","kbId":"kb-policy","kind":"paraphrase","gold":{"docs":["doc-policy-security"],"passages":["不要把“私有”标签视为完整的权限隔离"]}}
+{"id":"pol-cross-leave-expense-01","question":"年假和差旅报销规定分别是什么？","kbId":"kb-policy","kind":"cross_doc","gold":{"docs":["doc-policy-leave","doc-policy-expense"],"passages":["累计工作已满 1 年不满 10 年，年休假 5 天","差旅结束后 30 天内提交完整报销申请"]}}
+{"id":"pol-cross-onboard-01","question":"新人入职后要搞清楚哪些制度和权限规则？","kbId":"kb-policy","kind":"cross_doc","gold":{"docs":["doc-policy-onboarding","doc-policy-security"],"passages":["第一周：完成信息安全、企业制度、产品基础和协作流程培训","数据按公开、内部、敏感和受限四类管理"]}}
+{"id":"pol-distractor-500-01","question":"500 这个标准在制度里出现过几次？","kbId":"kb-policy","kind":"distractor","gold":{"docs":["doc-policy-expense"],"passages":["境内差旅餐费补助上限为每人每天 500 元"]}}
+{"id":"sup-refund-01","question":"客户申请退款有时限吗？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-refund"],"passages":["客户应在购买或订单支付成功后 7 天内提出退款申请"]}}
+{"id":"sup-refund-02","question":"买了十二天还能退吗？","kbId":"kb-support","kind":"paraphrase","gold":{"docs":["doc-support-refund"],"passages":["客户应在购买或订单支付成功后 7 天内提出退款申请"]}}
+{"id":"sup-refund-03","question":"退款需要客户提供哪些东西？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-refund"],"passages":["提供订单号、购买账号、付款凭证和退款原因"]}}
+{"id":"sup-refund-04","question":"客户提交退款之后我们多久受理？","kbId":"kb-support","kind":"numeric","gold":{"docs":["doc-support-refund"],"passages":["在 1 个工作日内确认受理"]}}
+{"id":"sup-refund-05","question":"审核要几天？","kbId":"kb-support","kind":"numeric","gold":{"docs":["doc-support-refund"],"passages":["符合政策的申请通常在 3 个工作日内完成审核"]}}
+{"id":"sup-refund-06","question":"钱多久能到客户账上？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-refund"],"passages":["到账时间一般为 3 至 7 个工作日"]}}
+{"id":"sup-refund-07","question":"能不能跟客户说马上就到账？","kbId":"kb-support","kind":"paraphrase","gold":{"docs":["doc-support-refund"],"passages":["避免承诺“立即到账”"]}}
+{"id":"sup-refund-08","question":"定制项目已经交付了一部分，还能退款吗？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-refund"],"passages":["已交付的定制成果、已消耗的特定服务等需按合同及法律判断"]}}
+{"id":"sup-refund-09","question":"客户对退款结果不满意怎么办？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-refund"],"passages":["可在原工单中申请复核"]}}
+{"id":"sup-refund-10","question":"超过七天因为系统故障用不了，还要不要处理？","kbId":"kb-support","kind":"paraphrase","gold":{"docs":["doc-support-refund"],"passages":["不能简单以超过 7 天拒绝沟通"]}}
+{"id":"sup-sla-01","question":"普通咨询多久要回复？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-sla"],"passages":["普通咨询在工作时间内 2 小时响应"]}}
+{"id":"sup-sla-02","question":"回复了客户就算问题解决了吗？","kbId":"kb-support","kind":"paraphrase","gold":{"docs":["doc-support-sla"],"passages":["响应时间不等于解决时间"]}}
+{"id":"sup-sla-03","question":"P0 事故响应要求是什么？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-sla"],"passages":["目标 15 分钟内响应"]}}
+{"id":"sup-sla-04","question":"核心服务整体挂了要怎么做？","kbId":"kb-support","kind":"paraphrase","gold":{"docs":["doc-support-sla"],"passages":["P0 事件指核心服务大面积不可用或存在重大数据风险"]}}
+{"id":"sup-sla-05","question":"有绕行方案的功能故障算几级？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-sla"],"passages":["P1 事件指关键功能受影响但有临时绕行方案"]}}
+{"id":"sup-sla-06","question":"P2 和 P3 的响应时间分别是多少？","kbId":"kb-support","kind":"numeric","gold":{"docs":["doc-support-sla"],"passages":["P2 为局部功能异常或一般使用问题，工作时间内 4 小时响应"]}}
+{"id":"sup-sla-07","question":"升级给研发时要带上哪些信息？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-sla"],"passages":["升级信息至少包含客户名称、问题摘要、首次发生时间、影响范围、复现步骤、日志标识和已采取措施"]}}
+{"id":"sup-sla-08","question":"客户把密码发给我了，可以直接转给工程师吗？","kbId":"kb-support","kind":"paraphrase","gold":{"docs":["doc-support-sla"],"passages":["不得要求客户通过普通聊天发送密码或完整生产凭证"]}}
+{"id":"sup-sla-09","question":"重大故障之后要复盘吗？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-sla"],"passages":["重大事件在 3 个工作日内组织复盘"]}}
+{"id":"sup-talk-01","question":"接到客户问题第一句该怎么说？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-troubleshoot"],"passages":["我先确认一下，您是在上传文件后看到解析失败"]}}
+{"id":"sup-talk-02","question":"客户传的是扫描件没有文字，怎么回复？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-troubleshoot"],"passages":["扫描件无可读文本时建议提供文字版"]}}
+{"id":"sup-talk-03","question":"为了指标好看能不能先给个大概答案？","kbId":"kb-support","kind":"paraphrase","gold":{"docs":["doc-support-troubleshoot"],"passages":["不得通过编造答案来改善“成功率”"]}}
+{"id":"sup-talk-04","question":"解析服务没启动的时候能告诉客户已经索引好了吗？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-troubleshoot"],"passages":["应说明“解析与检索服务暂不可用”"]}}
+{"id":"sup-feedback-01","question":"反馈分类里有哪几类？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-feedback"],"passages":["产品缺陷,实际行为与已确认的产品能力不符,研发团队"]}}
+{"id":"sup-feedback-02","question":"疑似数据泄露的反馈归谁处理？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-feedback"],"passages":["安全隐私,疑似泄露异常访问或个人信息诉求,安全负责人"]}}
+{"id":"sup-feedback-03","question":"客户提的功能需求能直接答他会做吗？","kbId":"kb-support","kind":"paraphrase","gold":{"docs":["doc-support-feedback"],"passages":["记录业务场景与频率但不承诺交付日期"]}}
+{"id":"sup-feedback-04","question":"反馈要不要建工单？","kbId":"kb-support","kind":"exact","gold":{"docs":["doc-support-feedback"],"passages":["每条反馈必须生成工单"]}}
+{"id":"sup-feedback-05","question":"多久汇总一次高频问题？","kbId":"kb-support","kind":"numeric","gold":{"docs":["doc-support-feedback"],"passages":["每周汇总高频问题，更新客服手册"]}}
+{"id":"sup-cross-refund-sla-01","question":"客户催退款进度，同时说服务还不可用，应该怎么响应？","kbId":null,"kind":"cross_doc","gold":{"docs":["doc-support-refund","doc-support-sla"],"passages":["到账时间一般为 3 至 7 个工作日","普通咨询在工作时间内 2 小时响应"]}}
+{"id":"sup-distractor-7days-01","question":"七天这个时间点在服务资料里都指什么？","kbId":"kb-support","kind":"distractor","gold":{"docs":["doc-support-refund"],"passages":["客户应在购买或订单支付成功后 7 天内提出退款申请"]}}
+{"id":"mkt-color-01","question":"品牌主色是什么色值？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-brand-design"],"passages":["推荐品牌橙 #F47745"]}}
+{"id":"mkt-color-02","question":"页面背景用哪个颜色？","kbId":"kb-marketing","kind":"paraphrase","gold":{"docs":["doc-brand-design"],"passages":["画布采用暖白 #FAF9F6"]}}
+{"id":"mkt-font-01","question":"界面正文字号多大合适？","kbId":"kb-marketing","kind":"numeric","gold":{"docs":["doc-brand-design"],"passages":["界面正文建议 14 至 16 像素"]}}
+{"id":"mkt-line-01","question":"行高有规范吗？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-brand-design"],"passages":["行高约 1.5 至 1.7"]}}
+{"id":"mkt-danger-01","question":"删除这类危险操作要怎么设计？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-brand-design"],"passages":["危险操作使用二次确认"]}}
+{"id":"mkt-a11y-01","question":"可访问性有什么要求？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-brand-design"],"passages":["文本与背景应保持足够对比度"]}}
+{"id":"mkt-a11y-02","question":"报错只标红可以吗？","kbId":"kb-marketing","kind":"paraphrase","gold":{"docs":["doc-brand-design"],"passages":["加载和错误状态不能只通过颜色表达"]}}
+{"id":"mkt-demo-data-01","question":"界面上的演示统计数字要说明吗？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-brand-design"],"passages":["演示统计需要标注为示例历史"]}}
+{"id":"mkt-slogan-01","question":"我们的核心表达是什么？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-brand-message"],"passages":["把散落的知识，变成团队的共同能力"]}}
+{"id":"mkt-naming-01","question":"产品名称书写有什么要求？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-brand-message"],"passages":["产品名统一写为“知序”或“KNOBASE”"]}}
+{"id":"mkt-error-01","question":"错误提示文案要包含哪几部分？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-brand-message"],"passages":["错误文案包含发生了什么、影响是什么、接下来能做什么"]}}
+{"id":"mkt-claim-01","question":"宣传时可以说已经接了大模型和做了权限隔离吗？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-brand-message"],"passages":["没有配置模型服务时，不能宣称已连接企业大模型"]}}
+{"id":"mkt-calendar-01","question":"三季度每个月的主题分别是什么？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-marketing-plan"],"passages":["七月主题为知识库入门"]}}
+{"id":"mkt-case-01","question":"用客户案例做宣传有什么前提？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-marketing-plan"],"passages":["客户案例需获得书面授权"]}}
+{"id":"mkt-metric-01","question":"PV 能当转化指标看吗？","kbId":"kb-marketing","kind":"paraphrase","gold":{"docs":["doc-marketing-plan"],"passages":["不得把页面访问量等同于业务转化"]}}
+{"id":"mkt-rhythm-01","question":"内容的协作节奏是怎么排的？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-marketing-plan"],"passages":["周一选题，周三初稿与产品核验，周五发布与复盘"]}}
+{"id":"mkt-pain-01","question":"用户找资料最普遍的困难是什么？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-marketing-research"],"passages":["资料散落在聊天、网盘和个人笔记中"]}}
+{"id":"mkt-pain-02","question":"为什么搜出一堆文档还是不敢用？","kbId":"kb-marketing","kind":"paraphrase","gold":{"docs":["doc-marketing-research"],"passages":["用户关心版本、生效时间和引用上下文"]}}
+{"id":"mkt-progress-01","question":"上传之后用户看不到进度会有什么问题？","kbId":"kb-marketing","kind":"paraphrase","gold":{"docs":["doc-marketing-research"],"passages":["清晰的解析进度、片段数量和失败原因可以降低不确定性"]}}
+{"id":"mkt-research-truth-01","question":"这份访谈摘要是真实客户数据吗？","kbId":"kb-marketing","kind":"exact","gold":{"docs":["doc-marketing-research"],"passages":["本资料为产品演示编写"]}}
+{"id":"mkt-cross-brand-plan-01","question":"写三季度内容时，配色和产品名要遵守哪些规范？","kbId":null,"kind":"cross_doc","gold":{"docs":["doc-brand-design","doc-brand-message"],"passages":["推荐品牌橙 #F47745","产品名统一写为“知序”或“KNOBASE”"]}}
+{"id":"team-principle-01","question":"协作的基本原则是什么？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-handbook"],"passages":["协作原则是信息透明、责任明确和异步优先"]}}
+{"id":"team-async-01","question":"异步提问该怎么组织信息？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-handbook"],"passages":["背景、问题、已尝试方法、期望结果"]}}
+{"id":"team-meeting-01","question":"会议纪要什么时候发？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-handbook"],"passages":["会后 24 小时内同步纪要"]}}
+{"id":"team-meeting-02","question":"没有决策需求的例行会可以不开吗？","kbId":"kb-team","kind":"paraphrase","gold":{"docs":["doc-team-handbook"],"passages":["没有议题或决策需求的例行会议可以取消"]}}
+{"id":"team-delay-01","question":"项目延期报告有什么要求？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-handbook"],"passages":["延期不可只写“进行中”"]}}
+{"id":"team-knowledge-01","question":"团队知识沉淀怎么做？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-handbook"],"passages":["知识沉淀采用小步更新"]}}
+{"id":"team-decision-api-01","question":"业务接口为什么统一由 Java 管？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-planning"],"passages":["业务 API 由 Java 统一管理，浏览器只调用 /api"]}}
+{"id":"team-decision-mode-01","question":"AI 服务挂了能不能显示成正常？","kbId":"kb-team","kind":"paraphrase","gold":{"docs":["doc-team-planning"],"passages":["健康状态必须反映实际服务状况"]}}
+{"id":"team-decision-demo-01","question":"演示统计要如何处理才不会误导？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-planning"],"passages":["历史演示统计在界面上明确标注"]}}
+{"id":"team-seed-01","question":"删掉的示例资料重启会回来吗？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-planning"],"passages":["种子数据只在首次启动时生成"]}}
+{"id":"team-retro-01","question":"复盘的目的是什么？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-retro"],"passages":["复盘目标是将一次交付转化为可复用的团队经验"]}}
+{"id":"team-retro-02","question":"事故恢复之后什么时候开复盘会？","kbId":"kb-team","kind":"numeric","gold":{"docs":["doc-team-retro"],"passages":["重大事件恢复后 3 个工作日内召开"]}}
+{"id":"team-retro-03","question":"复盘时怎么区分观察和结论？","kbId":"kb-team","kind":"paraphrase","gold":{"docs":["doc-team-retro"],"passages":["区分事实与判断"]}}
+{"id":"team-retro-04","question":"行动项怎么写才有效？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-retro"],"passages":["行动项需要可以验证，写明负责人和截止日期"]}}
+{"id":"team-retro-case-01","question":"页面显示解析成功但服务其实没跑，根因是什么？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-retro"],"passages":["根因是验收没有覆盖服务离线场景"]}}
+{"id":"team-day1-01","question":"新人前三天要完成什么？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-onboarding"],"passages":["第 1 至 3 天：完成 HR 报到、设备领取、账号申请和安全培训"]}}
+{"id":"team-week1-01","question":"第一周需要体验哪些功能？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-onboarding"],"passages":["导入一份无敏感信息的 Markdown"]}}
+{"id":"team-week2-01","question":"第二周的任务有什么要求？","kbId":"kb-team","kind":"exact","gold":{"docs":["doc-team-onboarding"],"passages":["第 2 周：在导师支持下完成一个小任务"]}}
+{"id":"team-week4-01","question":"满一个月时要做什么？","kbId":"kb-team","kind":"paraphrase","gold":{"docs":["doc-team-onboarding"],"passages":["回顾 30 天目标，展示交付成果和学习笔记"]}}
+{"id":"team-cross-retro-handbook-01","question":"复盘结论最后沉淀到哪里，谁来跟进？","kbId":"kb-team","kind":"cross_doc","gold":{"docs":["doc-team-retro","doc-team-handbook"],"passages":["复盘资料存入团队协作空间","每项任务应明确负责人、截止日期、验收标准和阻塞因素"]}}
+{"id":"team-distractor-30days-01","question":"30 天在团队资料里都出现在哪些地方？","kbId":null,"kind":"distractor","gold":{"docs":["doc-team-onboarding","doc-policy-expense"],"passages":["团队新人 30 天学习路线","差旅结束后 30 天内提交完整报销申请"]}}
+{"id":"glob-contact-01","question":"IT 支持组的邮箱地址是什么？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-shuttle-01","question":"公司班车几点发车？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-canteen-01","question":"食堂这周的菜单有什么？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-insurance-01","question":"五险一金的缴纳比例是多少？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-option-01","question":"公司的股票期权怎么授予？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-bonus-01","question":"年终奖一般发几个月？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-gym-01","question":"办公区有健身房吗？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-parking-01","question":"停车位要怎么申请？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-wifi-01","question":"访客 WiFi 的密码是什么？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-trip-01","question":"年度团建旅游的预算有多少？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-promotion-01","question":"晋升答辩安排在几月？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-remote-01","question":"每周可以远程办公几天？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-overtime-taxi-01","question":"加班打车报销标准是多少？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-maternity-01","question":"生育津贴怎么申领？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-supplement-insurance-01","question":"有补充医疗保险吗？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-offboarding-01","question":"离职手续要怎么办？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-rust-01","question":"怎么用 Rust 实现向量检索？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-competitor-01","question":"和竞品相比我们的定价是多少？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-ceo-01","question":"公司创始人是谁？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-headcount-01","question":"公司目前有多少员工？","kbId":null,"kind":"no_answer","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-scope-kb-01","question":"退款时限是多久？","kbId":"kb-marketing","kind":"scope","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-scope-kb-02","question":"年假怎么申请？","kbId":"kb-engineering","kind":"scope","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-scope-kb-03","question":"品牌橙的色值是多少？","kbId":"kb-support","kind":"scope","gold":{"docs":[],"passages":[]},"shouldRefuse":true}
+{"id":"glob-scope-kb-04","question":"P0 事故的响应时间是多少？","kbId":"kb-team","kind":"scope","gold":{"docs":[],"passages":[]},"shouldRefuse":true}

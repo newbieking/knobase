@@ -89,7 +89,7 @@ public class WorkspaceService {
             try {
                 String text = ai.parse(name, file.getBytes());
                 parsed.add(new Document(id("doc"), name, kbId, extension(name), file.getSize(),
-                        TextChunks.split(text, chunkSize).size(), "ready", now(), "team", text));
+                        ai.countChunks(text, chunkSize), "ready", now(), "team", text));
             } catch (IOException e) {
                 throw ApiException.badRequest("无法读取文件：" + name);
             }
@@ -110,20 +110,23 @@ public class WorkspaceService {
         });
     }
 
-    @Transactional
     public Document importText(ImportText request) {
         KnowledgeBase kb = repository.knowledgeBase(request.kbId());
         String name = filename(request.name(), true);
         long size = request.content().getBytes(StandardCharsets.UTF_8).length;
         if (size > MAX_BYTES) throw tooLarge();
-        int chunks = TextChunks.split(request.content(), repository.settings().chunkSize()).size();
+        int chunks = ai.countChunks(request.content(), repository.settings().chunkSize());
         if (chunks == 0) throw ApiException.badRequest("文档内容不能为空");
         Document doc = new Document(id("doc"), name, kb.id(), extension(name), size, chunks,
                 "ready", now(), kb.visibility(), request.content());
-        repository.insertDocument(doc);
-        repository.touchKnowledgeBase(kb.id());
-        repository.addActivity("upload", "导入了「" + name + "」", "文本已分段并加入「" + kb.name() + "」");
-        return doc;
+        // Counting happens outside the transaction, so the HTTP call cannot hold database locks.
+        return transactions.execute(status -> {
+            repository.knowledgeBase(kb.id());
+            repository.insertDocument(doc);
+            repository.touchKnowledgeBase(kb.id());
+            repository.addActivity("upload", "导入了「" + name + "」", "文本已分段并加入「" + kb.name() + "」");
+            return doc;
+        });
     }
 
     public Document document(String id) { return repository.document(id); }
@@ -135,15 +138,16 @@ public class WorkspaceService {
         repository.touchKnowledgeBase(doc.kbId());
     }
 
-    @Transactional
     public Document reindex(String id) {
         Document doc = repository.document(id);
-        int chunks = TextChunks.split(doc.content(), repository.settings().chunkSize()).size();
+        int chunks = ai.countChunks(doc.content(), repository.settings().chunkSize());
         if (chunks == 0) throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "文档没有可索引的文本");
-        repository.reindexDocument(id, chunks);
-        repository.touchKnowledgeBase(doc.kbId());
-        repository.addActivity("index", "重新索引了「" + doc.name() + "」", "按当前分段大小生成 " + chunks + " 个文本片段");
-        return repository.document(id);
+        return transactions.execute(status -> {
+            repository.reindexDocument(id, chunks);
+            repository.touchKnowledgeBase(doc.kbId());
+            repository.addActivity("index", "重新索引了「" + doc.name() + "」", "按当前分段大小生成 " + chunks + " 个文本片段");
+            return repository.document(id);
+        });
     }
 
     public ChatResponse chat(ChatRequest request) {

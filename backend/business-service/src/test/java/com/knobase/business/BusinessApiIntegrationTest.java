@@ -45,10 +45,13 @@ class BusinessApiIntegrationTest {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final HttpServer AI = startAi();
     private static final AtomicReference<JsonNode> LAST_QUERY = new AtomicReference<>();
+    private static final AtomicReference<JsonNode> LAST_CHUNK = new AtomicReference<>();
     private static volatile int queryStatus;
     private static volatile boolean invalidCitation;
     private static volatile boolean slowQuery;
     private static volatile boolean badParse;
+    private static volatile boolean badChunk;
+    private static volatile int chunkCount = 1;
     private static volatile String healthMode = "local";
     private static volatile int healthStatus = 200;
 
@@ -73,6 +76,9 @@ class BusinessApiIntegrationTest {
         jdbc.update("DELETE FROM app_meta");
         seed.run(new DefaultApplicationArguments());
         LAST_QUERY.set(null);
+        LAST_CHUNK.set(null);
+        chunkCount = 1;
+        badChunk = false;
         queryStatus = 200;
         invalidCitation = false;
         slowQuery = false;
@@ -132,16 +138,22 @@ class BusinessApiIntegrationTest {
         assertThat(doc.path("name").asText()).isEqualTo("未命名文档.md");
         assertThat(doc.path("size").asLong()).isEqualTo(text.getBytes(StandardCharsets.UTF_8).length);
         int originalChunks = doc.path("chunkCount").asInt();
+        assertThat(doc.path("chunkCount").asInt()).isEqualTo(chunkCount);
+        assertThat(fields(LAST_CHUNK.get())).containsExactlyInAnyOrder("content", "chunkSize");
+        assertThat(LAST_CHUNK.get().path("chunkSize").asInt()).isEqualTo(512);
         String id = doc.path("id").asText();
         MvcResult download = mvc.perform(get("/api/documents/" + id + "/download"))
                 .andExpect(status().isOk()).andExpect(content().contentType("text/plain;charset=UTF-8"))
                 .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString(".txt"))).andReturn();
         assertThat(download.getResponse().getContentAsString(StandardCharsets.UTF_8)).isEqualTo(text);
         saveSettings(128);
+        chunkCount = 9;
         JsonNode indexed = body(mvc.perform(post("/api/documents/" + id + "/reindex"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("ready")).andReturn());
+        assertThat(indexed.path("chunkCount").asInt()).isEqualTo(9);
         assertThat(indexed.path("chunkCount").asInt()).isGreaterThan(originalChunks);
-        assertThat(indexed.path("chunkCount").asInt()).isEqualTo(TextChunks.split(text, 128).size());
+        assertThat(LAST_CHUNK.get().path("chunkSize").asInt()).isEqualTo(128);
+        assertThat(LAST_CHUNK.get().path("content").asText()).isEqualTo(text);
         assertThat(repository.settings().chunkSize()).isEqualTo(128);
         mvc.perform(delete("/api/documents/" + id)).andExpect(status().isNoContent());
         mvc.perform(post("/api/documents/" + id + "/reindex")).andExpect(status().isNotFound());
@@ -327,12 +339,17 @@ class BusinessApiIntegrationTest {
     }
 
     @Test
-    void segmentationRetainsAllNonWhitespaceAndHandlesUnicode() {
-        String text = "中文段落。\n".repeat(80) + "\uD83D\uDE00".repeat(170);
-        List<String> chunks = TextChunks.split(text, 128);
-        assertThat(chunks).allSatisfy(chunk -> assertThat(chunk.codePointCount(0, chunk.length())).isBetween(1, 128));
-        assertThat(String.join("", chunks).replaceAll("\\s", "")).isEqualTo(text.replaceAll("\\s", ""));
-        assertThat(TextChunks.split("  \n\t", 128)).isEmpty();
+    void invalidChunkCountFromAiNeverPersistsAFakeIndexedDocument() throws Exception {
+        badChunk = true;
+        mvc.perform(post("/api/documents/text").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"kbId\":\"kb-product\",\"name\":\"片段.md\",\"content\":\"差旅报销需要发票。\"}"))
+                .andExpect(status().isBadGateway()).andExpect(jsonPath("$.message").isString());
+        assertThat(repository.documents()).hasSize(24);
+        mvc.perform(multipart("/api/documents").file(new MockMultipartFile("files", "ok.md", "text/plain",
+                        "内容".getBytes(StandardCharsets.UTF_8))).param("kbId", "kb-product"))
+                .andExpect(status().isBadGateway());
+        assertThat(repository.documents()).hasSize(24);
+        assertThat(repository.knowledgeBase("kb-product").chunkCount()).isPositive();
     }
 
     private JsonNode createKb(String name, String visibility) throws Exception {
@@ -381,6 +398,14 @@ class BusinessApiIntegrationTest {
                     String text = new String(Base64.getDecoder().decode(request.path("data").asText()), StandardCharsets.UTF_8);
                     send(exchange, 200, Map.of("text", text));
                 }
+            });
+            server.createContext("/internal/chunk", exchange -> {
+                LAST_CHUNK.set(JSON.readTree(exchange.getRequestBody()));
+                if (badChunk) {
+                    send(exchange, 200, Map.of("chunkCount", "many"));
+                    return;
+                }
+                send(exchange, 200, Map.of("chunkCount", chunkCount));
             });
             server.createContext("/internal/query", exchange -> {
                 JsonNode request = JSON.readTree(exchange.getRequestBody());

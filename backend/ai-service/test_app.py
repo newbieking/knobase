@@ -18,7 +18,7 @@ from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 
 from app import (
     CHUNK_SIZE, CONTEXT_BUDGET, LOCAL_MODEL, MAX_FILE_BYTES, QueryRequest, SourceDocument,
-    app, chunk_document, context_block, retrieve, tokenize,
+    app, chunk_document, context_block, rank_chunks, retrieve, select_context, tokenize,
 )
 
 
@@ -185,12 +185,47 @@ class ServiceTests(unittest.TestCase):
         payload = query_payload(documents=documents, topK=20)
         status, body = request("POST", "/internal/query", payload)
         self.assertEqual(status, 200)
-        self.assertEqual(len(body["citations"]), 4)
-        self.assertEqual(len({citation["documentId"] for citation in body["citations"]}), 4)
+        self.assertEqual(len(body["citations"]), 10)
+        self.assertEqual(len({citation["documentId"] for citation in body["citations"]}), 10)
         selected = retrieve(QueryRequest(**payload))
         self.assertLessEqual(len("\n\n".join(context_block(item.chunk, index) for index, item in enumerate(selected, 1))), CONTEXT_BUDGET)
         refs = set(re.findall(r"\[(\d+)\]", body["answer"]))
         self.assertTrue(refs.issubset({citation["id"] for citation in body["citations"]}))
+
+    def test_topk_caps_context_without_hidden_ceiling(self):
+        documents = [source(str(index), f"年假申请规定第{index}条：年假申请须提前提交，并提供代理人信息。")
+                     for index in range(25)]
+        for top_k in (3, 8, 20):
+            with self.subTest(topK=top_k):
+                citations = request("POST", "/internal/query", query_payload(documents=documents, topK=top_k))[1]["citations"]
+                self.assertEqual(len(citations), top_k)
+
+    def test_chunk_endpoint_matches_retrieval_segmentation(self):
+        text = "差旅结束后30天内提交申请。餐补每日上限500元。\n" * 35
+        for chunk_size in (128, CHUNK_SIZE, 4096):
+            with self.subTest(chunkSize=chunk_size):
+                status, body = request("POST", "/internal/chunk", {"content": text, "chunkSize": chunk_size})
+                self.assertEqual(status, 200)
+                self.assertEqual(body, {"chunkCount": len(chunk_document(SourceDocument(**source("long", text)), chunk_size))})
+        self.assertEqual(request("POST", "/internal/chunk", {"content": "  \n\t ", "chunkSize": 128})[1]["chunkCount"], 0)
+        self.assertEqual(request("POST", "/internal/chunk", {"content": text})[1]["chunkCount"],
+                         request("POST", "/internal/chunk", {"content": text, "chunkSize": CHUNK_SIZE})[1]["chunkCount"])
+        for payload in ({"content": "x", "chunkSize": 127}, {"content": "x", "chunkSize": 8193},
+                        {"content": "x", "chunkSize": True}, {"chunkSize": 512}):
+            with self.subTest(payload=payload):
+                self.assertEqual(request("POST", "/internal/chunk", payload)[0], 422)
+
+    def test_rank_chunks_exposes_full_candidates_for_evaluation(self):
+        documents = [source(str(index), f"年假申请规定第{index}条：年假申请须提前提交，并提供代理人信息。")
+                     for index in range(10)]
+        ranked = rank_chunks(QueryRequest(**query_payload(documents=documents, topK=2)))
+        self.assertGreater(len(ranked), 2)
+        self.assertEqual([item.chunk.text for item in ranked[:2]],
+                         [item.chunk.text for item in select_context(ranked, 2)])
+        self.assertEqual(retrieve(QueryRequest(**query_payload(documents=documents, topK=2))), select_context(ranked, 2))
+        scores = [item.score for item in ranked]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+        self.assertTrue(all(0 <= score <= 1 for score in scores))
 
     def test_latin_retrieval(self):
         status, body = request("POST", "/internal/query", query_payload("What languages does the Python team use?"))

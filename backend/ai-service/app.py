@@ -96,6 +96,11 @@ class Citation(BaseModel):
     score: float
 
 
+class ChunkRequest(InputModel):
+    content: str = Field(max_length=MAX_TEXT_CHARS)
+    chunkSize: int = Field(default=CHUNK_SIZE, ge=128, le=8192, strict=True)
+
+
 class QueryResponse(BaseModel):
     answer: str
     citations: list[Citation]
@@ -224,10 +229,11 @@ class Chunk:
     ordinal: int
 
 
-def chunk_document(document: SourceDocument, chunk_size: int) -> list[Chunk]:
-    chunks: list[Chunk] = []
+def chunk_pages(content: str, chunk_size: int) -> list[tuple[int, str, int, int]]:
+    """Page-aware segmentation shared by retrieval and the reported chunk count."""
     splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=min(CHUNK_OVERLAP, chunk_size // 4))
-    for page_number, page_text in enumerate(document.content.split("\f"), start=1):
+    results: list[tuple[int, str, int, int]] = []
+    for page_number, page_text in enumerate(content.split("\f"), start=1):
         page_text_stripped = page_text.strip()
         if not page_text_stripped:
             continue
@@ -247,9 +253,14 @@ def chunk_document(document: SourceDocument, chunk_size: int) -> list[Chunk]:
             spans[-1] = (spans[-1][0], len(page_text_stripped))
         for text, (start, end) in zip(text_chunks, spans):
             if text.strip():
-                chunks.append(Chunk(document.id, document.name, page_number, text, start, end,
-                                    page_text_stripped, len(chunks)))
-    return chunks
+                results.append((page_number, text, start, end))
+    return results
+
+
+def chunk_document(document: SourceDocument, chunk_size: int) -> list[Chunk]:
+    return [Chunk(document.id, document.name, page, text, start, end,
+                  document.content.split("\f")[page - 1].strip(), index)
+            for index, (page, text, start, end) in enumerate(chunk_pages(document.content, chunk_size))]
 
 
 SENTENCE_BOUNDARY = re.compile(r"[。！？!?][”’\"」』]?|\.(?=\s)|\n")
@@ -259,6 +270,13 @@ SENTENCES = re.compile(r".+?(?:[。！？!?]+[”’\"」』]?|\.(?=\s|$)|\n+|$)
 @app.post("/internal/parse")
 def parse(request: ParseRequest) -> dict[str, str]:
     return {"text": parse_file(request)}
+
+
+@app.post("/internal/chunk")
+def count_chunks(request: ChunkRequest) -> dict[str, int]:
+    # Counted with the retrieval chunker so stored chunk counts cannot drift from what is searched.
+    probe = SourceDocument(id="count", name="count", content=request.content, kbId="count")
+    return {"chunkCount": len(chunk_document(probe, request.chunkSize))}
 
 
 FILLER = re.compile(
@@ -312,7 +330,8 @@ class RankedChunk:
     score: float
 
 
-def retrieve(request: QueryRequest) -> list[RankedChunk]:
+def rank_chunks(request: QueryRequest) -> list[RankedChunk]:
+    """Full relevance-ordered candidates, before dedupe and context budgeting."""
     if sum(len(document.content) for document in request.documents) > MAX_TEXT_CHARS:
         raise HTTPException(413, "本次检索的文本总量过大，请缩小范围")
     query_tokens = tokenize(request.question)
@@ -338,14 +357,14 @@ def retrieve(request: QueryRequest) -> list[RankedChunk]:
         if not is_relevant(query_tokens, count):
             continue
         bm_score = 0.0
-        for term in query_tokens.keys() & count.keys():
+        for term in sorted(query_tokens.keys() & count.keys()):
             tf = count[term]
             bm_idf = math.log(1 + (size - frequency[term] + 0.5) / (frequency[term] + 0.5))
             bm_score += term_weight(term) * bm_idf * tf * 2.5 / (tf + 1.5 * (0.25 + 0.75 * lengths[index] / average_length))
         vector = {term: (1 + math.log(tf)) * idf[term] * term_weight(term) for term, tf in count.items()}
         norm = math.sqrt(sum(weight * weight for weight in vector.values())) or 1
         bm25[index] = bm_score
-        cosine[index] = sum(query_vector.get(term, 0) * weight for term, weight in vector.items()) / (query_norm * norm)
+        cosine[index] = sum(query_vector.get(term, 0) * weight for term, weight in sorted(vector.items())) / (query_norm * norm)
     if not bm25:
         return []
     bm_order = sorted(bm25, key=lambda index: (-bm25[index], index))
@@ -373,9 +392,15 @@ def retrieve(request: QueryRequest) -> list[RankedChunk]:
         score = min(1.0, max(0.0, score))
         ranked.append(RankedChunk(chunks[index], round(score, 4)))
     ranked.sort(key=lambda item: (-item.score, item.chunk.document_id, item.chunk.page, item.chunk.ordinal))
+    return ranked
+
+
+def select_context(ranked: list[RankedChunk], top_k: int) -> list[RankedChunk]:
     selected: list[RankedChunk] = []
     used_chars = 0
-    for item in ranked[:request.topK]:
+    for item in ranked:
+        if len(selected) >= top_k:
+            break
         # Overlap and repeated paragraphs must not consume all citation slots.
         duplicate = any(
             item.chunk.text == previous.chunk.text
@@ -391,9 +416,11 @@ def retrieve(request: QueryRequest) -> list[RankedChunk]:
             continue
         selected.append(item)
         used_chars += block_length
-        if len(selected) >= min(request.topK, 4):
-            break
     return selected
+
+
+def retrieve(request: QueryRequest) -> list[RankedChunk]:
+    return select_context(rank_chunks(request), request.topK)
 
 
 def context_block(chunk: Chunk, index: int) -> str:

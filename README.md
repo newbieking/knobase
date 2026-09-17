@@ -13,6 +13,7 @@
 - [项目结构](#项目结构)
 - [功能模块](#功能模块)
 - [快速启动](#快速启动)
+- [测试与评测](#测试与评测)
 - [API 概览](#api-概览)
 - [配置说明](#配置说明)
 - [数据模型](#数据模型)
@@ -47,7 +48,7 @@
 
 **请求链路**：浏览器 → Vite 代理 `/api` → Java 业务服务 → Python AI 服务
 
-- **文件上传**：Java 校验扩展名与大小 → Base64 编码发送到 Python `/internal/parse` 获取提取文本 → Java 按当前分段设置计算片段数并入库
+- **文件上传**：Java 校验扩展名与大小 → Base64 编码发送到 Python `/internal/parse` 获取提取文本 → 调用 `/internal/chunk` 用同一个分片器取片段数 → 入库
 - **知识问答**：Java 根据数据库中的可用文档构建上下文 → 发送到 Python `/internal/query`（携带分段与检索设置）→ 获取答案与引用 → 保存会话
 
 ---
@@ -101,17 +102,27 @@ my-rag/
 │   │       │   ├── WorkspaceService.java       # 核心业务逻辑
 │   │       │   ├── WorkspaceRepository.java    # 数据访问层（Spring JDBC）
 │   │       │   ├── AiClient.java               # Python AI 服务 HTTP 客户端
-│   │       │   ├── TextChunks.java             # 文本分段工具
 │   │       │   └── SeedData.java               # 演示数据初始化
-│   │       └── resources/
-│   │           ├── application.properties      # 服务配置
-│   │           └── schema.sql                  # 数据库建表语句
+│   │       ├── resources/
+│   │       │   ├── application.properties      # 服务配置
+│   │       │   ├── schema.sql                  # 数据库建表语句
+│   │       │   └── seed/documents.json         # 演示文档正文（业务与评测共用的唯一语料）
+│   │       └── src/test/java/com/knobase/business/
+│   │           └── BusinessApiIntegrationTest.java   # 集成测试（MockMvc + 桩 AI 服务）
 │   │
 │   └── ai-service/                     # Python AI 服务
-│       ├── app.py                      # FastAPI 主应用（解析、检索、问答）
+│       ├── app.py                      # FastAPI 主应用（解析、分段、检索、问答）
 │       ├── requirements.txt            # Python 依赖
-│       ├── .env                        # LLM 网关配置（API Key / Base URL / Model）
-│       └── test_app.py                 # 单元测试
+│       ├── .env.example                # LLM 网关配置模板（复制为 .env）
+│       ├── eval/
+│       │   ├── dataset.jsonl           # Golden set：192 条问答用例
+│       │   └── run_eval.py             # 指标脚本 + markdown 报告 + 回归门
+│       ├── test_app.py                 # 服务端单元测试
+│       └── test_eval.py                # 评测集与指标守护测试
+│
+├── docs/
+│   ├── roadmap.md                      # 迭代路线图与 S1 结论
+│   └── eval-baseline.md                # 检索评测基线（由 eval.run_eval 生成）
 │
 └── dist/                               # 前端构建产物
 ```
@@ -171,7 +182,7 @@ my-rag/
 
 - 工作空间名称
 - 检索参数配置：
-  - 分段大小 (chunkSize)：128 ~ 8192 字符
+  - 分段大小 (chunkSize)：128 ~ 8192（LlamaIndex 按 token 计数，实际片段比数字短，S2 统一口径）
   - 返回条数 (topK)：1 ~ 20
   - 生成温度 (temperature)：0.0 ~ 2.0
   - 混合检索开关 (hybridSearch)
@@ -234,6 +245,46 @@ Vite 会自动将 `/api` 请求代理到 Java 业务服务 (9090)。
 
 ---
 
+## 测试与评测
+
+```bash
+# 前端类型检查与构建
+npm run build
+
+# Java 业务服务集成测试（MockMvc + 桩 AI 服务，不需要 Python 在跑）
+cd backend/business-service && mvn verify
+
+# Python AI 服务单元测试（app + 评测集守护，共 41 个）
+cd backend/ai-service && python -m unittest discover
+```
+
+Windows 控制台输出中文报告前先设置 `PYTHONIOENCODING=utf-8`。
+
+### 检索评测
+
+评测直接跑在业务同一份代码与同一份语料上（`seed/documents.json`），无需启动任何服务：
+
+```bash
+cd backend/ai-service
+
+python -m eval.run_eval --check-corpus                    # 片段数与分片器是否一致
+python -m eval.run_eval                                   # markdown 报告
+python -m eval.run_eval --out ../../docs/eval-baseline.md # 重新生成基线文件
+python -m eval.run_eval --only paraphrase                 # 按用例类型或 id 过滤
+python -m eval.run_eval --no-hybrid --json                # 对比检索开关
+python -m eval.run_eval --min docHit@5=0.80 --max falseRefusal=0.15   # 回归门
+```
+
+指标口径：`docRecall` / `docHit` / `passageRecall` / `rr`(MRR) / `ndcg` 取 @1/@3/@5/@10；
+`refusal`（应拒答且确实无引用）、`falseRefusal`（可答却被拒）、`answerCoverage`
+（本地摘录答案覆盖期望要点的比例）。当前基线与解读见 `docs/eval-baseline.md` 和
+`docs/roadmap.md` 的 S1 结论。
+
+CI（`.github/workflows/ci.yml`）跑上面三条 job，并在 AI 服务 job 里以
+`docHit@5 ≥ 0.80`、`ndcg@10 ≥ 0.75`、`refusal ≥ 0.45`、`falseRefusal ≤ 0.15` 作为回归门。
+
+---
+
 ## API 概览
 
 ### 前端 → Java 业务服务 (`/api`)
@@ -261,6 +312,7 @@ Vite 会自动将 `/api` 请求代理到 Java 业务服务 (9090)。
 |------|------|------|
 | GET | `/health` | AI 服务健康检查，返回状态与模式 |
 | POST | `/internal/parse` | 解析文件（Base64），返回提取文本 |
+| POST | `/internal/chunk` | 按检索侧同一分片器统计片段数，返回 `chunkCount` |
 | POST | `/internal/query` | 执行检索与问答，返回答案、引用、耗时 |
 
 ---
@@ -270,11 +322,12 @@ Vite 会自动将 `/api` 请求代理到 Java 业务服务 (9090)。
 ### Python AI 服务 (.env)
 
 ```env
-# LLM 模型网关配置
+# LLM 模型网关配置（整个文件可省略，留空即本地摘录检索模式）
 LLM_API_KEY=              # 留空则使用本地检索模式
 LLM_BASE_URL=https://api.openai.com/v1   # OpenAI 兼容 API 地址
 LLM_MODEL_ID=gpt-4o-mini                 # 模型标识
 LLM_MODEL_NAME=GPT-4o mini              # 模型显示名称
+LLM_TIMEOUT_SECONDS=25                   # 网关超时，取值被夹到 1~60 秒
 ```
 
 支持任何 OpenAI 兼容的 API 端点（OpenAI、Azure OpenAI、本地 Ollama、vLLM 等）。

@@ -46,6 +46,12 @@ public class AiClient {
         return text;
     }
 
+    public int countChunks(String content, int chunkSize) {
+        JsonNode node = post("/internal/chunk", Map.of("content", content, "chunkSize", chunkSize));
+        if (!node.path("chunkCount").isInt() || node.path("chunkCount").asInt() < 0) throw invalidResponse();
+        return node.path("chunkCount").asInt();
+    }
+
     public Answer query(String question, List<Document> documents, List<Message> history, Settings settings) {
         List<Map<String, String>> sources = documents.stream().map(doc -> Map.of(
                 "id", doc.id(), "name", doc.name(), "content", doc.content(), "kbId", doc.kbId())).toList();

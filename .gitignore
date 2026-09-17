@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.venv/
+
+# Build outputs
+dist/
+target/
+tsconfig.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Java
+*.class
+*.jar
+*.war
+hs_err_pid*.log
+replay_pid*.log
+
+# Environment (contains API keys)
+.env
+
+# Data (H2 database)
+data/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

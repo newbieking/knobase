@@ -1,0 +1,11 @@
+export type Page = 'overview' | 'knowledge' | 'documents' | 'chat' | 'agents' | 'analytics' | 'settings';
+export type KnowledgeBase = { id: string; name: string; description: string; color: string; icon: string; documentCount: number; chunkCount: number; status: 'ready' | 'indexing'; updatedAt: string; visibility: 'team' | 'private'; tags: string[] };
+export type Document = { id: string; name: string; kbId: string; type: string; size: number; chunkCount: number; status: 'ready' | 'processing' | 'failed'; updatedAt: string; visibility: 'team' | 'private'; content: string };
+export type Activity = { id: string; type: 'upload' | 'chat' | 'create' | 'index'; title: string; description: string; time: string };
+export type Citation = { id: string; documentId: string; name: string; page: number; excerpt: string; score: number };
+export type Message = { id: string; role: 'user' | 'assistant'; content: string; citations?: Citation[]; elapsed?: number; model?: string };
+export type Session = { id: string; title: string; createdAt: string; messages: Message[] };
+export type Settings = { model: string; temperature: number; topK: number; chunkSize: number; hybridSearch: boolean; reranking: boolean; workspaceName: string };
+export type Bootstrap = { knowledgeBases: KnowledgeBase[]; documents: Document[]; activities: Activity[]; sessions: Session[]; settings: Settings; stats: { queries: number; queryChange: number; latency: number; successRate: number; trend: { date: string; queries: number; tokens: number }[] }; mode: 'local' | 'connected' };
+export type Health = { status: string; business: string; ai: string; mode: 'local' | 'connected' };
+export type ChatResponse = { sessionId: string; message: Message; mode: 'local' | 'connected' };

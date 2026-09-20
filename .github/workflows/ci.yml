@@ -62,3 +62,7 @@ jobs:
             --min passageRecall@5=0.85 \
             --min refusal=0.45 \
             --max falseRefusal=0.15
+      - name: 复述类回归门
+        # 复述类整体是语义路的压力面：S1 纯词面基线 docHit@5 为 0.605，S2 实测 0.674。
+        # 综合门槛会被 exact 类的高分掩盖，这里单独立门，防止语义路静默失效而 CI 依旧全绿。
+        run: python -m eval.run_eval --json --only paraphrase --min docHit@5=0.64

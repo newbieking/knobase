@@ -46,6 +46,7 @@ class BusinessApiIntegrationTest {
     private static final HttpServer AI = startAi();
     private static final AtomicReference<JsonNode> LAST_QUERY = new AtomicReference<>();
     private static final AtomicReference<JsonNode> LAST_CHUNK = new AtomicReference<>();
+    private static final AtomicReference<JsonNode> LAST_PURGE = new AtomicReference<>();
     private static volatile int queryStatus;
     private static volatile boolean invalidCitation;
     private static volatile boolean slowQuery;
@@ -77,6 +78,7 @@ class BusinessApiIntegrationTest {
         seed.run(new DefaultApplicationArguments());
         LAST_QUERY.set(null);
         LAST_CHUNK.set(null);
+        LAST_PURGE.set(null);
         chunkCount = 1;
         badChunk = false;
         queryStatus = 200;
@@ -155,7 +157,10 @@ class BusinessApiIntegrationTest {
         assertThat(LAST_CHUNK.get().path("chunkSize").asInt()).isEqualTo(128);
         assertThat(LAST_CHUNK.get().path("content").asText()).isEqualTo(text);
         assertThat(repository.settings().chunkSize()).isEqualTo(128);
+        assertThat(LAST_PURGE.get().path("documentId").asText()).isEqualTo(id);
+        LAST_PURGE.set(null);
         mvc.perform(delete("/api/documents/" + id)).andExpect(status().isNoContent());
+        assertThat(LAST_PURGE.get().path("documentId").asText()).isEqualTo(id);
         mvc.perform(post("/api/documents/" + id + "/reindex")).andExpect(status().isNotFound());
     }
 
@@ -406,6 +411,10 @@ class BusinessApiIntegrationTest {
                     return;
                 }
                 send(exchange, 200, Map.of("chunkCount", chunkCount));
+            });
+            server.createContext("/internal/index/purge", exchange -> {
+                LAST_PURGE.set(JSON.readTree(exchange.getRequestBody()));
+                send(exchange, 200, Map.of("status", "ok"));
             });
             server.createContext("/internal/query", exchange -> {
                 JsonNode request = JSON.readTree(exchange.getRequestBody());

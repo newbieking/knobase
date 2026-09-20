@@ -69,8 +69,14 @@ public class WorkspaceService {
         return tags == null ? List.of() : tags.stream().map(String::strip).distinct().toList();
     }
 
-    @Transactional
-    public void deleteKnowledgeBase(String id) { repository.deleteKnowledgeBase(id); }
+    public void deleteKnowledgeBase(String id) {
+        List<String> documentIds = repository.documentIds(id);
+        transactions.execute(status -> {
+            repository.deleteKnowledgeBase(id);
+            return null;
+        });
+        documentIds.forEach(ai::purgeIndex);
+    }
 
     public List<Document> upload(String kbId, List<MultipartFile> files) {
         if (kbId == null || kbId.isBlank()) throw ApiException.badRequest("请选择知识库");
@@ -131,23 +137,30 @@ public class WorkspaceService {
 
     public Document document(String id) { return repository.document(id); }
 
-    @Transactional
     public void deleteDocument(String id) {
         Document doc = repository.document(id);
-        repository.deleteDocument(id);
-        repository.touchKnowledgeBase(doc.kbId());
+        transactions.execute(status -> {
+            repository.deleteDocument(id);
+            repository.touchKnowledgeBase(doc.kbId());
+            return null;
+        });
+        // 事务提交后再通知检索侧，HTTP 调用不该占着数据库连接。
+        ai.purgeIndex(id);
     }
 
     public Document reindex(String id) {
         Document doc = repository.document(id);
         int chunks = ai.countChunks(doc.content(), repository.settings().chunkSize());
         if (chunks == 0) throw new ApiException(HttpStatus.UNPROCESSABLE_ENTITY, "文档没有可索引的文本");
-        return transactions.execute(status -> {
+        Document updated = transactions.execute(status -> {
             repository.reindexDocument(id, chunks);
             repository.touchKnowledgeBase(doc.kbId());
             repository.addActivity("index", "重新索引了「" + doc.name() + "」", "按当前分段大小生成 " + chunks + " 个文本片段");
             return repository.document(id);
         });
+        // 重建意味着旧分段与向量作废：留下它们只会让下一次提问继续用上一次的缓存。
+        ai.purgeIndex(id);
+        return updated;
     }
 
     public ChatResponse chat(ChatRequest request) {

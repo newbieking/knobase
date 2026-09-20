@@ -258,7 +258,7 @@ npm run build
 # Java 业务服务集成测试（MockMvc + 桩 AI 服务，不需要 Python 在跑）
 cd backend/business-service && mvn verify
 
-# Python AI 服务单元测试（app + 评测集守护，共 52 个）
+# Python AI 服务单元测试（app + 评测集守护，共 58 个）
 cd backend/ai-service && python -m unittest discover
 ```
 
@@ -277,6 +277,7 @@ python -m eval.run_eval --out ../../docs/eval-baseline.md # 重新生成基线�
 python -m eval.run_eval --only paraphrase                 # 按用例类型或 id 过滤
 python -m eval.run_eval --no-hybrid --json                # 对比检索开关
 python -m eval.run_eval --min docHit@5=0.86 --max falseRefusal=0.15   # 回归门
+python -m eval.run_eval --only paraphrase --min docHit@5=0.64         # 复述类单独立门
 ```
 
 指标口径：`docRecall` / `docHit` / `passageRecall` / `rr`(MRR) / `ndcg` 取 @1/@3/@5/@10；
@@ -286,8 +287,9 @@ python -m eval.run_eval --min docHit@5=0.86 --max falseRefusal=0.15   # 回归�
 
 CI（`.github/workflows/ci.yml`）跑上面三条 job，并在 AI 服务 job 里以
 `docHit@5 ≥ 0.86`、`ndcg@10 ≥ 0.78`、`passageRecall@5 ≥ 0.85`、`refusal ≥ 0.45`、
-`falseRefusal ≤ 0.15` 作为回归门；评测用 `RAG_INDEX_PATH` 指向 runner 临时目录，
-不污染工作区。
+`falseRefusal ≤ 0.15` 作为回归门，另外把复述类单独设门（`--only paraphrase`，
+`docHit@5 ≥ 0.64`）——综合门槛会被 exact 类的高分掩盖，语义路静默失效时不会报警；
+评测用 `RAG_INDEX_PATH` 指向 runner 临时目录，不污染工作区。
 
 ---
 
@@ -316,9 +318,10 @@ CI（`.github/workflows/ci.yml`）跑上面三条 job，并在 AI 服务 job 里
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/health` | AI 健康检查：`status`、`mode`、`model`、`index`（ready/unavailable）、`indexedChunks`、`indexedDocuments`、`vectorCache`、`semantic`（gateway/lsi） |
+| GET | `/health` | AI 健康检查：`status`、`mode`、`model`、`index`（ready/unavailable）、`indexedChunks`、`indexedDocuments`、`vectorCache`、`semantic`（最近一次检索实际走的路：gateway/lsi，网关失败后显示 lsi） |
 | POST | `/internal/parse` | 解析文件（Base64），返回提取文本 |
 | POST | `/internal/chunk` | 按检索侧同一分片器统计片段数，返回 `chunkCount` |
+| POST | `/internal/index/purge` | 丢弃某文档的全部缓存分段与向量（文档删除或重建索引后由业务服务调用） |
 | POST | `/internal/query` | 执行检索与问答，返回答案、引用、耗时 |
 
 ---
@@ -411,9 +414,11 @@ server: {
 - **语义路**：默认用截断 SVD 的离线 LSI（零外部依赖、结果可复现）；配置 `EMBEDDING_*` 后换成 OpenAI 兼容
   `/v1/embeddings` 的真向量，片段向量按内容哈希缓存在本地索引里
 - **持久索引**：分段结果、词频与向量统一落在 SQLite，键含分段器版本与 `chunkSize`，文档改动即失效，
-  因此检索延迟不再随语料规模线性增长；索引不可写时自动退回内存计算
-- **拒答判据**：词面完全无证据即拒答；只有模型校准过的向量相似度（≥ `VECTOR_EVIDENCE_FLOOR`）能在零词面证据时单独召回，
-  LSI 分数因量级随语料规模漂移不享有这个权利
+  因此检索延迟不再随语料规模线性增长；索引不可写时自动退回内存计算。缓存读回要求分段清单完整
+  （半份缓存会被重建），容量淘汰以整篇文档为单位，文档删除或重建索引后业务服务会调用
+  `/internal/index/purge` 清掉该文档的全部缓存
+- **拒答判据**：词面完全无证据即拒答；只有模型校准过的向量相似度（逐条片段都要 ≥ `VECTOR_EVIDENCE_FLOOR`，
+  不是只看榜首）能在零词面证据时单独召回，LSI 分数因量级随语料规模漂移不享有这个权利
 - **中文分词**：针对中文文本特性，采用单字 + 双字组合 (Bigram) 的分词策略，配合自定义停用词表
 - **重排序**：在融合排序基础上，加入查询术语覆盖率与短语精确匹配评分
 - **上下文预算**：控制送入 LLM 的总文本量（默认 5000 字符），避免超出 Token 限制

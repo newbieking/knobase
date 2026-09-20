@@ -123,6 +123,10 @@ class ChunkRequest(InputModel):
     chunkSize: int = Field(default=CHUNK_SIZE, ge=128, le=8192, strict=True)
 
 
+class PurgeRequest(InputModel):
+    documentId: str = Field(min_length=1, max_length=256)
+
+
 class QueryResponse(BaseModel):
     answer: str
     citations: list[Citation]
@@ -166,7 +170,7 @@ def health() -> dict[str, str]:
         "index": "unavailable" if store.disabled else "ready",
         "indexedChunks": str(stats["chunks"]), "indexedDocuments": str(stats["documents"]),
         "vectorCache": str(stats["vectors"]),
-        "semantic": "gateway" if embedding_config() else "lsi",
+        "semantic": current_semantic_route(),
     }
 
 
@@ -342,6 +346,13 @@ def count_chunks(request: ChunkRequest) -> dict[str, int]:
     return {"chunkCount": len(chunk_document(probe, request.chunkSize))}
 
 
+@app.post("/internal/index/purge")
+def purge_index(request: PurgeRequest) -> dict[str, str]:
+    # 删除或重建文档后调用：缓存键是内容哈希，残留行不会再被读到，但白占容量也会让健康计数虚高。
+    index_store().purge(request.documentId)
+    return {"status": "ok"}
+
+
 FILLER = re.compile(
     r"请问|请帮我|请告诉我|请介绍|告诉我|帮忙|能不能|可不可以|是否可以|"
     r"怎么样|怎么做|为什么|是什么|有什么|有哪些|有没有|如何|怎么|什么|哪些|多少|"
@@ -417,6 +428,10 @@ class LocalIndex:
                 "page INTEGER NOT NULL, start_offset INTEGER NOT NULL, end_offset INTEGER NOT NULL,"
                 "content_hash TEXT NOT NULL, text TEXT NOT NULL, tokens TEXT NOT NULL,"
                 "PRIMARY KEY(document_id, chunk_size, ordinal));"
+                # 片段数单独记一行：淘汰与读回都以文档为单位，半份缓存不能算命中。
+                "CREATE TABLE IF NOT EXISTS chunk_set("
+                "document_id TEXT NOT NULL, chunk_size INTEGER NOT NULL, content_hash TEXT NOT NULL,"
+                "chunk_count INTEGER NOT NULL, PRIMARY KEY(document_id, chunk_size));"
                 "CREATE TABLE IF NOT EXISTS vector("
                 "model TEXT NOT NULL, text_hash TEXT NOT NULL, dims INTEGER NOT NULL, data BLOB NOT NULL,"
                 "PRIMARY KEY(model, text_hash));"
@@ -436,31 +451,59 @@ class LocalIndex:
                 return None
 
     def chunks(self, document_id: str, content_hash: str, chunk_size: int) -> list[tuple[int, int, int, int, str, dict[str, int]]] | None:
-        return self._run(lambda connection: [
-            (ordinal, page, start, end, text, json.loads(tokens))
-            for ordinal, page, start, end, text, tokens in connection.execute(
+        def action(connection: sqlite3.Connection):
+            manifest = connection.execute(
+                "SELECT content_hash, chunk_count FROM chunk_set WHERE document_id = ? AND chunk_size = ?",
+                (document_id, chunk_size)).fetchone()
+            if manifest is None or manifest[0] != content_hash:
+                return None
+            rows = connection.execute(
                 "SELECT ordinal, page, start_offset, end_offset, text, tokens FROM chunk"
-                " WHERE document_id = ? AND chunk_size = ? AND content_hash = ? ORDER BY ordinal",
-                (document_id, chunk_size, content_hash),
-            )
-        ] or None)
+                " WHERE document_id = ? AND chunk_size = ? ORDER BY ordinal",
+                (document_id, chunk_size),
+            ).fetchall()
+            # 行数与清单不符说明上次写入中断或缓存被裁过，重建比复用半份缓存安全。
+            if len(rows) != manifest[1] or not rows:
+                return None
+            return [(ordinal, page, start, end, text, json.loads(tokens))
+                    for ordinal, page, start, end, text, tokens in rows]
+        return self._run(action)
 
     def put_chunks(self, document_id: str, content_hash: str, chunk_size: int,
                    entries: list[tuple[Chunk, Counter[str]]]) -> None:
         def action(connection: sqlite3.Connection) -> None:
             connection.execute("DELETE FROM chunk WHERE document_id = ? AND chunk_size = ?",
                                (document_id, chunk_size))
-            connection.executemany(
-                "INSERT INTO chunk VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [(document_id, chunk_size, chunk.ordinal, chunk.page, chunk.start, chunk.end, content_hash,
-                  chunk.text, json.dumps(dict(count), ensure_ascii=False)) for chunk, count in entries],
-            )
-            oversized = connection.execute("SELECT count(*) FROM chunk").fetchone()[0] > INDEX_MAX_CHUNK_ROWS
-            if oversized:
-                connection.execute(
-                    "DELETE FROM chunk WHERE rowid NOT IN (SELECT rowid FROM chunk ORDER BY rowid DESC LIMIT ?)",
-                    (INDEX_MAX_CHUNK_ROWS,),
+            connection.execute("DELETE FROM chunk_set WHERE document_id = ? AND chunk_size = ?",
+                               (document_id, chunk_size))
+            # 单文档就超过容量上限时不留缓存：写进去也只会立刻被整篇淘汰。
+            if len(entries) <= INDEX_MAX_CHUNK_ROWS:
+                connection.executemany(
+                    "INSERT INTO chunk VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [(document_id, chunk_size, chunk.ordinal, chunk.page, chunk.start, chunk.end, content_hash,
+                      chunk.text, json.dumps(dict(count), ensure_ascii=False)) for chunk, count in entries],
                 )
+                connection.execute("INSERT INTO chunk_set VALUES (?, ?, ?, ?)",
+                                   (document_id, chunk_size, content_hash, len(entries)))
+                self._evict(connection)
+            connection.commit()
+        self._run(action)
+
+    def _evict(self, connection: sqlite3.Connection) -> None:
+        """Drop whole documents oldest-first; trimming rows inside one document would leave a half cache read as a hit."""
+        while connection.execute("SELECT count(*) FROM chunk").fetchone()[0] > INDEX_MAX_CHUNK_ROWS:
+            victim = connection.execute("SELECT document_id, chunk_size FROM chunk_set ORDER BY rowid LIMIT 1").fetchone()
+            if victim is None:
+                connection.execute("DELETE FROM chunk")
+                return
+            connection.execute("DELETE FROM chunk WHERE document_id = ? AND chunk_size = ?", victim)
+            connection.execute("DELETE FROM chunk_set WHERE document_id = ? AND chunk_size = ?", victim)
+
+    def purge(self, document_id: str) -> None:
+        """Drop every cached size for one document; the business service calls this on delete and reindex."""
+        def action(connection: sqlite3.Connection) -> None:
+            connection.execute("DELETE FROM chunk WHERE document_id = ?", (document_id,))
+            connection.execute("DELETE FROM chunk_set WHERE document_id = ?", (document_id,))
             connection.commit()
         self._run(action)
 
@@ -545,41 +588,74 @@ def request_embeddings(texts: list[str], config: EmbeddingConfig) -> list[list[f
     rows = body.get("data") if isinstance(body, dict) else None
     if not isinstance(rows, list) or len(rows) != len(texts):
         return None
-    vectors: list[list[float]] = []
-    for row in rows:
+    vectors: list[list[float] | None] = [None] * len(texts)
+    for position, row in enumerate(rows):
+        # 网关允许乱序返回，必须按 index 归位；缺 index 时按位置，但每个输入只能被认领一次。
+        index = row.get("index", position) if isinstance(row, dict) else position
+        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(texts) \
+                or vectors[index] is not None:
+            return None
         values = row.get("embedding") if isinstance(row, dict) else None
         if not isinstance(values, list) or not values or not all(isinstance(value, (int, float)) for value in values):
             return None
-        vectors.append([float(value) for value in values])
-    dims = {len(vector) for vector in vectors}
+        vectors[index] = [float(value) for value in values]
+    if any(vector is None for vector in vectors):
+        return None
+    dims = {len(vector) for vector in vectors if vector is not None}
     return vectors if len(dims) == 1 else None
+
+
+def vector_space(config: EmbeddingConfig) -> str:
+    """Same model id behind a different gateway is a different vector space; the cache must not mix them."""
+    return f"{config.base_url}|{config.model_id}"
 
 
 def embedding_matrix(texts: list[str], config: EmbeddingConfig) -> np.ndarray | None:
     """Unit-norm embeddings for these texts, served from the local cache and backfilled in batches."""
     store = index_store()
-    vectors: list[list[float] | None] = [store.vector(config.model_id, text) for text in texts]
+    space = vector_space(config)
+    vectors: list[list[float] | None] = [store.vector(space, text) for text in texts]
     missing = [index for index, vector in enumerate(vectors) if vector is None]
+    fetched: list[int] = []
     for start in range(0, len(missing), EMBEDDING_BATCH_SIZE):
         batch = missing[start:start + EMBEDDING_BATCH_SIZE]
-        fetched = request_embeddings([texts[index] for index in batch], config)
-        if fetched is None or len(fetched) != len(batch):
+        batch_vectors = request_embeddings([texts[index] for index in batch], config)
+        if batch_vectors is None or len(batch_vectors) != len(batch):
             return None
-        for index, vector in zip(batch, fetched):
+        for index, vector in zip(batch, batch_vectors):
             vectors[index] = vector
-            store.put_vector(config.model_id, texts[index], vector)
+        fetched.extend(batch)
+    dims = {len(vector) for vector in vectors if vector is not None}
+    if any(vector is None for vector in vectors) or len(dims) != 1:
+        # 维度不一致说明缓存里混着另一个向量空间的向量，拿它排序只会给出无意义的相似度。
+        logger.warning("向量维度不一致，本次退回潜在语义分解")
+        return None
     matrix = np.asarray(vectors, dtype=float)
     if not np.isfinite(matrix).all():
         return None
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     if (norms <= 0).any():
         return None
+    # 整批校验通过后才落缓存：异常响应不该留在索引里，让后续请求继续踩。
+    for index in fetched:
+        vector = vectors[index]
+        if vector is not None:
+            store.put_vector(space, texts[index], vector)
     return matrix / norms
 
 
+# 最近一次检索实际使用的语义路：配置了网关但调用失败会回落到 lsi，健康状态不该只报告配置。
+_semantic_route = "lsi"
+
+
+def current_semantic_route() -> str:
+    return _semantic_route if embedding_config() else "lsi"
+
+
 def dense_ranking(request: QueryRequest, query_tokens: Counter[str], chunks: list[Chunk],
-                  counts: list[Counter[str]]) -> tuple[list[int], float, bool]:
-    """Ordered candidate indices with their top score; the third value says whether it is calibrated."""
+                  counts: list[Counter[str]]) -> tuple[list[tuple[int, float]], bool]:
+    """Similarity-ordered candidates and whether those scores come from a calibrated model."""
+    global _semantic_route
     config = embedding_config()
     if config:
         matrix = embedding_matrix([chunk.text for chunk in chunks] + [request.question], config)
@@ -587,10 +663,11 @@ def dense_ranking(request: QueryRequest, query_tokens: Counter[str], chunks: lis
             query, documents = matrix[-1], matrix[:-1]
             similarities = documents @ query
             order = [int(index) for index in np.argsort(-similarities, kind="stable")]
-            return order, float(similarities[order[0]]), True
+            _semantic_route = "gateway"
+            return [(index, float(similarities[index])) for index in order], True
         logger.warning("向量检索不可用，本次退回潜在语义分解")
-    order = [index for index, _ in semantic_similarity(query_tokens, counts)]
-    return order, 0.0, False
+    _semantic_route = "lsi"
+    return semantic_similarity(query_tokens, counts), False
 
 
 def semantic_similarity(query_tokens: Counter[str], counts: list[Counter[str]]) -> list[tuple[int, float]]:
@@ -698,13 +775,18 @@ def rank_chunks(request: QueryRequest) -> list[RankedChunk]:
         bm25[index] = bm_score
         cosine[index] = sum(query_vector.get(term, 0) * weight for term, weight in sorted(vector.items())) / (query_norm * norm)
     dense: list[int] = []
-    dense_top = 0.0
     calibrated = False
     if request.hybridSearch:
-        dense, dense_top, calibrated = dense_ranking(request, query_tokens, chunks, counts)
+        candidates, calibrated = dense_ranking(request, query_tokens, chunks, counts)
+        if calibrated:
+            # 逐条过阈值：不同网关的相似度尺度只有过了标定下限才算召回证据。
+            dense = [index for index, score in candidates if score >= VECTOR_EVIDENCE_FLOOR]
+        else:
+            # LSI 分数只在正区间有语义，负相关与零分不构成召回证据。
+            dense = [index for index, score in candidates if score > 0]
     if not bm25:
         # 词面完全没有证据时，只有模型校准过的向量相似度还能单独召回，LSI 分数不配。
-        if not (calibrated and dense_top >= VECTOR_EVIDENCE_FLOOR):
+        if not (calibrated and dense):
             return []
     bm_order = sorted(bm25, key=lambda index: (-bm25[index], index))
     if not request.hybridSearch:

@@ -15,14 +15,20 @@ from eval.run_eval import (
 OPTIONS = {"chunkSize": 512, "hybridSearch": True, "reranking": True}
 KINDS = {"exact", "paraphrase", "numeric", "cross_doc", "distractor", "latin", "no_answer", "scope"}
 _INDEX = tempfile.TemporaryDirectory(prefix="knobase-eval-")
+# 评测必须在离线状态下可复现：宿主机配置了向量网关也不能改变这些数字。
+_ENVIRONMENT = patch.dict(os.environ, {
+    "RAG_INDEX_PATH": os.path.join(_INDEX.name, "retrieval.db"),
+    "EMBEDDING_API_KEY": "", "EMBEDDING_MODEL_ID": "", "EMBEDDING_BASE_URL": "",
+})
 
 
 def setUpModule():
-    os.environ["RAG_INDEX_PATH"] = os.path.join(_INDEX.name, "retrieval.db")
+    _ENVIRONMENT.start()
 
 
 def tearDownModule():
     index_store().close()
+    _ENVIRONMENT.stop()
     _INDEX.cleanup()
 
 

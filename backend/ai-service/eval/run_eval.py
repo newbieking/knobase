@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app import (
-    QueryRequest, SourceDocument, chunk_pages, local_answer, rank_chunks, retrieve,
+    QueryRequest, SourceDocument, chunk_pages, local_answer, rank_chunks, select_context,
 )
 
 SEED_CORPUS = Path(__file__).resolve().parents[2] / "business-service/src/main/resources/seed/documents.json"
@@ -85,7 +85,7 @@ def run_case(case: dict, corpus: list[SourceDocument], top_k: int, options: dict
                            reranking=options["reranking"])
     started = time.perf_counter()
     ranked = rank_chunks(request)
-    selected = retrieve(request)
+    selected = select_context(ranked, request.topK)
     result.seconds = time.perf_counter() - started
 
     wanted = {normalize(passage) for passage in result.gold_passages}

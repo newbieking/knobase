@@ -54,6 +54,15 @@ public class AiClient {
         return node.path("chunkCount").asInt();
     }
 
+    /** Discards the cached segmentation and vectors of one document; failures are ignored on purpose. */
+    public void purgeIndex(String documentId) {
+        try {
+            post("/internal/index/purge", Map.of("documentId", documentId));
+        } catch (RuntimeException ignored) {
+            // Cache rows are keyed by content hash, so a document that is gone can never be retrieved again.
+        }
+    }
+
     public Answer query(String question, List<Document> documents, List<Message> history, Settings settings) {
         List<Map<String, String>> sources = documents.stream().map(doc -> Map.of(
                 "id", doc.id(), "name", doc.name(), "content", doc.content(), "kbId", doc.kbId())).toList();

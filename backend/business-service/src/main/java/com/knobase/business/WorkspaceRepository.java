@@ -102,6 +102,10 @@ public class WorkspaceRepository {
         return jdbc.query("SELECT * FROM documents WHERE status='ready' AND kb_id=? ORDER BY updated_at DESC,id", documentMapper, kbId);
     }
 
+    public List<String> documentIds(String kbId) {
+        return jdbc.queryForList("SELECT id FROM documents WHERE kb_id=?", String.class, kbId);
+    }
+
     public Document document(String id) {
         return jdbc.query("SELECT * FROM documents WHERE id=?", documentMapper, id).stream().findFirst()
                 .orElseThrow(() -> ApiException.notFound("文档"));

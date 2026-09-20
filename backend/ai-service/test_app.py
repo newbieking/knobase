@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -19,8 +20,8 @@ from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 
 from app import (
     CHUNK_SIZE, CONTEXT_BUDGET, LOCAL_MODEL, MAX_FILE_BYTES, QueryRequest, SourceDocument,
-    app, chunk_document, context_block, document_units, index_store, rank_chunks, retrieve,
-    select_context, tokenize,
+    app, chunk_document, context_block, document_units, embedding_config, embedding_matrix,
+    index_store, rank_chunks, request_embeddings, retrieve, select_context, tokenize, vector_space,
 )
 
 
@@ -59,6 +60,15 @@ def request(method, path, payload=None):
 def release_index(test):
     # Windows refuses to delete a directory while the cached index handle is still open.
     test.addCleanup(index_store().close)
+
+
+def offline_environment(index_path):
+    return patch.dict(os.environ, {
+        "LLM_API_KEY": "", "LLM_BASE_URL": "https://api.openai.com/v1",
+        "LLM_MODEL_ID": "gpt-4o-mini", "LLM_TIMEOUT_SECONDS": "2",
+        "EMBEDDING_API_KEY": "", "EMBEDDING_MODEL_ID": "", "EMBEDDING_BASE_URL": "",
+        "RAG_INDEX_PATH": index_path,
+    })
 
 
 def source(identifier, text, name=None, kb="kb-1"):
@@ -103,11 +113,7 @@ class ServiceTests(unittest.TestCase):
     def setUp(self):
         self.index_dir = tempfile.TemporaryDirectory(prefix="knobase-index-")
         self.addCleanup(self.index_dir.cleanup)
-        self.environment = patch.dict(os.environ, {
-            "LLM_API_KEY": "", "LLM_BASE_URL": "https://api.openai.com/v1",
-            "LLM_MODEL_ID": "gpt-4o-mini", "LLM_TIMEOUT_SECONDS": "2",
-            "RAG_INDEX_PATH": os.path.join(self.index_dir.name, "retrieval.db"),
-        })
+        self.environment = offline_environment(os.path.join(self.index_dir.name, "retrieval.db"))
         self.environment.start()
         self.addCleanup(self.environment.stop)
         release_index(self)
@@ -456,7 +462,7 @@ class IndexCacheTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="knobase-index-")
         self.addCleanup(self.directory.cleanup)
-        self.environment = patch.dict(os.environ, {"LLM_API_KEY": "", "RAG_INDEX_PATH": self.index_path()})
+        self.environment = offline_environment(self.index_path())
         self.environment.start()
         self.addCleanup(self.environment.stop)
         release_index(self)
@@ -495,6 +501,41 @@ class IndexCacheTests(unittest.TestCase):
         self.assertEqual(splitter.call_count, len(self.request.documents))
         self.assertEqual(index_store().stats()["chunks"], 4)
 
+    def test_half_evicted_chunk_set_is_rebuilt_not_served(self):
+        document_units(self.request)
+        connection = sqlite3.connect(self.index_path())
+        connection.execute("DELETE FROM chunk WHERE document_id = 'leave'")
+        connection.commit()
+        connection.close()
+        with patch("app.chunk_document", wraps=chunk_document) as splitter:
+            chunks, _ = document_units(self.request)
+        self.assertEqual(splitter.call_count, 1, "片段被人为删掉后必须重建，而不是把残缺缓存当命中")
+        self.assertIn("年假", "".join(chunk.text for chunk in chunks if chunk.document_id == "leave"))
+
+    def test_cache_eviction_drops_whole_documents(self):
+        paged = SourceDocument(id="paged", name="paged.txt", content="第一页内容。\f第二页内容。\f第三页内容。", kbId="kb")
+        with patch("app.INDEX_MAX_CHUNK_ROWS", 3):
+            document_units(self.request.model_copy(update={"documents": [self.leave]}))
+            document_units(self.request.model_copy(update={"documents": [paged]}))
+            stats = index_store().stats()
+            with patch("app.chunk_document", wraps=chunk_document) as splitter:
+                chunks, _ = document_units(self.request.model_copy(update={"documents": [paged]}))
+        self.assertEqual(stats["documents"], 1, "淘汰必须以整篇文档为单位，不能只删片段")
+        self.assertEqual(stats["chunks"], 3)
+        self.assertEqual(splitter.call_count, 0, "被保留的文档必须仍能从缓存里完整读出")
+        self.assertEqual([chunk.text for chunk in chunks], ["第一页内容。", "第二页内容。", "第三页内容。"])
+
+    def test_purge_drops_every_cached_size_of_a_document(self):
+        document_units(self.request)
+        document_units(self.request.model_copy(update={"chunkSize": 128}))
+        before = index_store().stats()["chunks"]
+        status, body = request("POST", "/internal/index/purge", {"documentId": "leave"})
+        self.assertEqual((status, body["status"]), (200, "ok"))
+        self.assertLess(index_store().stats()["chunks"], before)
+        with patch("app.chunk_document", wraps=chunk_document) as splitter:
+            document_units(self.request)
+        self.assertGreater(splitter.call_count, 0, "purge 之后必须重新分段")
+
     def test_unusable_index_degrades_to_memory_scoring(self):
         self.environment.stop()
         with patch.dict(os.environ, {"LLM_API_KEY": "", "RAG_INDEX_PATH": self.directory.name}):
@@ -510,7 +551,7 @@ class EmbeddingTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(prefix="knobase-index-")
         self.addCleanup(self.directory.cleanup)
         self.calls: list[dict] = []
-        self.environment = patch.dict(os.environ, {"LLM_API_KEY": "", "RAG_INDEX_PATH": self.index_path()})
+        self.environment = offline_environment(self.index_path())
         self.environment.start()
         self.addCleanup(self.environment.stop)
         release_index(self)
@@ -575,9 +616,37 @@ class EmbeddingTests(unittest.TestCase):
         with self.configure(self.serve({"员工每年享有10天带薪年假。": [1.0, 0.0], "flibber lab": [1.0, 0.0]})):
             status, body = request("POST", "/internal/query", self.payload("flibber lab"))
         self.assertEqual(status, 200)
-        self.assertEqual(body["citations"][0]["documentId"], "leave")
+        self.assertEqual([cite["documentId"] for cite in body["citations"]], ["leave"],
+                         "只有过阈值的片段才能进入引用，不能因为榜首分数高就放行整张候选榜")
         with self.configure("http://127.0.0.1:1/v1"):
             self.assertEqual(request("POST", "/internal/query", self.payload("wubble frock"))[1]["citations"], [])
+
+    def test_embedding_rows_are_placed_by_index_and_duplicates_rejected(self):
+        with self.configure("http://127.0.0.1:1/v1"):
+            config = embedding_config()
+            reordered = json.dumps({"data": [{"index": 1, "embedding": [0.0, 1.0]},
+                                             {"index": 0, "embedding": [1.0, 0.0]}]}).encode()
+            with patch("app.urlopen", return_value=io.BytesIO(reordered)):
+                self.assertEqual(request_embeddings(["first", "second"], config), [[1.0, 0.0], [0.0, 1.0]])
+            duplicated = json.dumps({"data": [{"index": 0, "embedding": [1.0, 0.0]},
+                                              {"index": 0, "embedding": [1.0, 0.0]}]}).encode()
+            with patch("app.urlopen", return_value=io.BytesIO(duplicated)):
+                self.assertIsNone(request_embeddings(["first", "second"], config))
+
+    def test_dimension_drift_degrades_without_raising_or_caching(self):
+        with self.configure("http://127.0.0.1:1/v1"):
+            config = embedding_config()
+            space = vector_space(config)
+            index_store().put_vector(space, "cached text", [1.0, 0.0])
+            with patch("app.request_embeddings", return_value=[[1.0, 0.0, 0.0]]):
+                self.assertIsNone(embedding_matrix(["cached text", "new text"], config))
+            self.assertIsNone(index_store().vector(space, "new text"), "维度不一致的向量不该落进缓存")
+
+    def test_health_reports_the_route_that_actually_ran(self):
+        with self.configure("http://127.0.0.1:1/v1"):
+            self.assertEqual(request("POST", "/internal/query", self.payload())[0], 200)
+            self.assertEqual(request("GET", "/health")[1]["semantic"], "lsi", "网关不可用时不能声称走的是向量路")
+        self.assertEqual(request("GET", "/health")[1]["semantic"], "lsi")
 
     def test_weak_vectors_still_refuse(self):
         with self.configure(self.serve({"flibber lab": [1.0, 0.0]})):

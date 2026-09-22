@@ -17,6 +17,7 @@ import unicodedata
 import zipfile
 from collections import Counter
 from dataclasses import dataclass
+from http.client import HTTPException as HTTPClientException
 from pathlib import PurePosixPath
 from typing import Literal
 from urllib.error import URLError
@@ -48,7 +49,8 @@ SEMANTIC_MAX_CHUNKS = 400
 SEMANTIC_MAX_TERMS = 4000
 # 向量缓存与分段结果落在本地 SQLite，超过上限按写入顺序淘汰最旧的片段。
 INDEX_MAX_CHUNK_ROWS = 50000
-EMBEDDING_BATCH_SIZE = 64
+# DashScope 兼容模式限制单次最多 25 条文本，超限整批 400 会让语义路整体回落到 LSI。
+EMBEDDING_BATCH_SIZE = 25
 EMBEDDING_TIMEOUT_SECONDS = 15
 EMBEDDING_WEIGHT = 1.0
 # 只有模型校准过的向量相似度才能在零词面证据时单独召回；LSI 分数量级随语料规模漂移，不享有这个权利。
@@ -57,6 +59,8 @@ VECTOR_EVIDENCE_FLOOR = 0.35
 RERANK_FUSED = 0.70
 RERANK_COVERAGE = 0.22
 RERANK_PHRASE = 0.08
+RERANK_CANDIDATES = 30
+RERANK_TIMEOUT_SECONDS = 10
 LOCAL_MODEL = "本地检索引擎"
 NO_MATCH = (
     "抱歉，在当前所选范围的资料中没有找到与这个问题足够相关的内容，"
@@ -575,6 +579,29 @@ def embedding_config() -> EmbeddingConfig | None:
     return EmbeddingConfig(key=key, base_url=base_url, model_id=model_id)
 
 
+@dataclass(frozen=True)
+class RerankConfig:
+    key: str
+    base_url: str
+    model_id: str
+
+
+def rerank_config() -> RerankConfig | None:
+    key = os.getenv("RERANK_API_KEY", "").strip()
+    base_url = os.getenv("RERANK_BASE_URL", "").strip().rstrip("/")
+    model_id = os.getenv("RERANK_MODEL_ID", "").strip()
+    if not key or not base_url or not model_id:
+        return None
+    try:
+        parsed = urlparse(base_url)
+        if not base_url_is_usable(base_url) or parsed.query or parsed.fragment:
+            raise ValueError("invalid rerank URL")
+    except ValueError:
+        logger.warning("RERANK_BASE_URL 配置无效，保留本地重排结果")
+        return None
+    return RerankConfig(key=key, base_url=base_url, model_id=model_id)
+
+
 def request_embeddings(texts: list[str], config: EmbeddingConfig) -> list[list[float]] | None:
     payload = json.dumps({"model": config.model_id, "input": texts, "encoding_format": "float"}).encode()
     request = Request(f"{config.base_url}/embeddings", data=payload, method="POST",
@@ -740,8 +767,52 @@ def document_units(request: QueryRequest) -> tuple[list[Chunk], list[Counter[str
     return chunks, counts
 
 
+def rerank_candidates(question: str, ranked: list[RankedChunk]) -> list[RankedChunk]:
+    if len(ranked) < 2:
+        return ranked
+    config = rerank_config()
+    if config is None:
+        return ranked
+    candidates = ranked[:RERANK_CANDIDATES]
+    documents = [item.chunk.text for item in candidates]
+    path = urlparse(config.base_url).path
+    dashscope = "/services/rerank/" in path
+    if dashscope:
+        endpoint = config.base_url
+        payload = {"model": config.model_id, "input": {"query": question, "documents": documents},
+                   "parameters": {"top_n": len(candidates)}}
+    else:
+        endpoint = config.base_url if path.endswith(("/rerank", "/reranks")) else f"{config.base_url}/rerank"
+        payload = {"model": config.model_id, "query": question, "documents": documents, "top_n": len(candidates)}
+    try:
+        request = Request(endpoint, data=json.dumps(payload).encode(), method="POST",
+                          headers={"Content-Type": "application/json", "Authorization": f"Bearer {config.key}"})
+        with urlopen(request, timeout=RERANK_TIMEOUT_SECONDS) as response:
+            body = json.loads(response.read())
+        output = body.get("output") if dashscope and isinstance(body, dict) else body
+        results = output.get("results") if isinstance(output, dict) else None
+        if not isinstance(results, list) or len(results) != len(candidates):
+            raise ValueError("incomplete rerank results")
+        scores: dict[int, float] = {}
+        for row in results:
+            if not isinstance(row, dict):
+                raise ValueError("invalid rerank result")
+            index, score = row.get("index"), row.get("relevance_score")
+            if type(index) is not int or not 0 <= index < len(candidates) or index in scores:
+                raise ValueError("invalid rerank index")
+            if type(score) not in (int, float) or not 0 <= score <= 1:
+                raise ValueError("invalid rerank score")
+            scores[index] = float(score)
+        order = sorted(scores, key=lambda index: (-scores[index], index))
+        # 两阶段分数尺度不同，模型排序成功后不再混入未经模型评分的尾部候选。
+        return [RankedChunk(candidates[index].chunk, round(scores[index], 4)) for index in order]
+    except (URLError, OSError, ValueError, HTTPClientException) as error:
+        logger.warning("模型重排失败，保留本地重排结果：%s", type(error).__name__)
+        return ranked
+
+
 def rank_chunks(request: QueryRequest) -> list[RankedChunk]:
-    """Full relevance-ordered candidates, before dedupe and context budgeting."""
+    """Relevance-ordered candidates after optional cascade reranking, before context selection."""
     if sum(len(document.content) for document in request.documents) > MAX_TEXT_CHARS:
         raise HTTPException(413, "本次检索的文本总量过大，请缩小范围")
     query_tokens = tokenize(request.question)
@@ -816,7 +887,7 @@ def rank_chunks(request: QueryRequest) -> list[RankedChunk]:
         score = min(1.0, max(0.0, score))
         ranked.append(RankedChunk(chunks[index], round(score, 4)))
     ranked.sort(key=lambda item: (-item.score, item.chunk.document_id, item.chunk.page, item.chunk.ordinal))
-    return ranked
+    return rerank_candidates(request.question, ranked) if request.reranking else ranked
 
 
 def select_context(ranked: list[RankedChunk], top_k: int) -> list[RankedChunk]:

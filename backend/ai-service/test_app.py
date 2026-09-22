@@ -67,6 +67,7 @@ def offline_environment(index_path):
         "LLM_API_KEY": "", "LLM_BASE_URL": "https://api.openai.com/v1",
         "LLM_MODEL_ID": "gpt-4o-mini", "LLM_TIMEOUT_SECONDS": "2",
         "EMBEDDING_API_KEY": "", "EMBEDDING_MODEL_ID": "", "EMBEDDING_BASE_URL": "",
+        "RERANK_API_KEY": "", "RERANK_BASE_URL": "", "RERANK_MODEL_ID": "",
         "RAG_INDEX_PATH": index_path,
     })
 
@@ -537,8 +538,7 @@ class IndexCacheTests(unittest.TestCase):
         self.assertGreater(splitter.call_count, 0, "purge 之后必须重新分段")
 
     def test_unusable_index_degrades_to_memory_scoring(self):
-        self.environment.stop()
-        with patch.dict(os.environ, {"LLM_API_KEY": "", "RAG_INDEX_PATH": self.directory.name}):
+        with patch.dict(os.environ, {"RAG_INDEX_PATH": self.directory.name}):
             status, body = request("POST", "/internal/query", query_payload())
             health = request("GET", "/health")[1]
         self.assertEqual(status, 200)

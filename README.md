@@ -218,7 +218,7 @@ pip install -r requirements.txt
 # 配置 LLM（可选，不配置则使用本地摘录检索模式）
 cp .env.example .env
 # 编辑 .env 填入 LLM_API_KEY、LLM_BASE_URL、LLM_MODEL_ID
-# 语义召回可选配 EMBEDDING_*（OpenAI 兼容 /v1/embeddings）；不配则走离线 LSI
+# 语义召回可选配 EMBEDDING_*（OpenAI 兼容 /v1/embeddings）；模型重排可选配 RERANK_*；不配则走离线链路
 
 # 启动服务 → http://127.0.0.1:9001
 python app.py
@@ -343,6 +343,11 @@ EMBEDDING_API_KEY=                       # 留空则语义路走离线 LSI
 EMBEDDING_BASE_URL=https://api.openai.com/v1
 EMBEDDING_MODEL_ID=                      # OpenAI 兼容 /v1/embeddings 的模型标识
 
+# 模型重排配置（可选，三项同时填写才生效；留空则只用本地重排）
+RERANK_API_KEY=                          # 留空则跳过模型重排
+RERANK_BASE_URL=                         # DashScope 填完整 text-rerank 地址；其他网关填基址（自动补 /rerank）
+RERANK_MODEL_ID=                         # 重排模型标识（单次最多 30 个候选，超时 10 秒即回落到本地序）
+
 # 本地检索索引（SQLite）路径，留空则用 backend/ai-service/.index/retrieval.db
 RAG_INDEX_PATH=
 ```
@@ -401,7 +406,7 @@ server: {
      ↓   加权倒数秩融合 (RRF，三路)    ↓
      └────────┬───────────┘
               ↓
-      重排序（覆盖率 + 短语匹配）
+      级联重排（本地覆盖率/短语 → 配置后交模型打分）
               ↓
       去重 + 上下文预算裁剪
               ↓
@@ -420,5 +425,6 @@ server: {
 - **拒答判据**：词面完全无证据即拒答；只有模型校准过的向量相似度（逐条片段都要 ≥ `VECTOR_EVIDENCE_FLOOR`，
   不是只看榜首）能在零词面证据时单独召回，LSI 分数因量级随语料规模漂移不享有这个权利
 - **中文分词**：针对中文文本特性，采用单字 + 双字组合 (Bigram) 的分词策略，配合自定义停用词表
-- **重排序**：在融合排序基础上，加入查询术语覆盖率与短语精确匹配评分
+- **重排序**：先按查询术语覆盖率与短语精确匹配做本地重排；配置 `RERANK_*` 后取本地 Top-30 交给模型
+  打分重排，响应非法或超时即整单回落到本地序，且不再混入未评分的尾部候选
 - **上下文预算**：控制送入 LLM 的总文本量（默认 5000 字符），避免超出 Token 限制

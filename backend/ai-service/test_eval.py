@@ -19,6 +19,7 @@ _INDEX = tempfile.TemporaryDirectory(prefix="knobase-eval-")
 _ENVIRONMENT = patch.dict(os.environ, {
     "RAG_INDEX_PATH": os.path.join(_INDEX.name, "retrieval.db"),
     "EMBEDDING_API_KEY": "", "EMBEDDING_MODEL_ID": "", "EMBEDDING_BASE_URL": "",
+    "RERANK_API_KEY": "", "RERANK_BASE_URL": "", "RERANK_MODEL_ID": "",
 })
 
 

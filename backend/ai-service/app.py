@@ -16,19 +16,23 @@ import logging
 import unicodedata
 import zipfile
 from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
-from http.client import HTTPException as HTTPClientException
 from pathlib import PurePosixPath
 from typing import Literal
-from urllib.error import URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
 from docx import Document as WordDocument
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+import httpx
+from langchain_core.callbacks import Callbacks
+from langchain_core.documents import Document
+from langchain_core.documents.compressor import BaseDocumentCompressor
+from langchain_core.embeddings import Embeddings
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from openai import OpenAI, OpenAIError
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pypdf import PdfReader
 import numpy as np
 
@@ -66,6 +70,15 @@ NO_MATCH = (
     "抱歉，在当前所选范围的资料中没有找到与这个问题足够相关的内容，"
     "因此无法基于这些资料给出可靠回答。您可以补充关键词、换一种问法，"
     "或选择包含相关内容的知识库后再试。"
+)
+# 生成侧拒答协议：资料不足以支撑回答、或问题明显超出资料范围时，模型必须以该哨兵开头显式声明，
+# 而不是靠"有没有引用"或拒答关键词被猜测。受限原因只有两种，防止模型自造原因。
+REFUSAL_REASONS = ("evidence_insufficient", "out_of_scope")
+REFUSAL_PREFIX = "[[REFUSAL:"
+REFUSAL_MARKER = re.compile(r"^\[\[REFUSAL:(evidence_insufficient|out_of_scope)\]\][ \t]*")
+REFUSAL_FALLBACK = (
+    "很抱歉，当前检索到的资料不足以支撑一个可靠的回答，因此我不作臆测。"
+    "您可以换一种问法、补充更具体的关键词，或选择更相关的知识库后再试。"
 )
 
 app = FastAPI(title="Local knowledge retrieval service", version="1.0.0", docs_url=None, redoc_url=None)
@@ -137,6 +150,19 @@ class QueryResponse(BaseModel):
     elapsed: int
     model: str
     mode: Literal["local", "connected"]
+    outcome: Literal["answer", "refusal"]
+    refusalReason: Literal["evidence_insufficient", "out_of_scope"] | None = None
+    usage: dict | None = None
+
+    @model_validator(mode="after")
+    def consistent_outcome(self) -> "QueryResponse":
+        if not self.answer.strip():
+            raise ValueError("答案内容不能为空")
+        if self.outcome == "refusal" and self.refusalReason is None:
+            raise ValueError("拒答必须携带受限原因")
+        if self.outcome == "answer" and self.refusalReason is not None:
+            raise ValueError("正常回答不应携带拒答原因")
+        return self
 
 
 @dataclass(frozen=True)
@@ -602,34 +628,91 @@ def rerank_config() -> RerankConfig | None:
     return RerankConfig(key=key, base_url=base_url, model_id=model_id)
 
 
+class GatewayReranker(BaseDocumentCompressor):
+    """DashScope 原生 text-rerank 客户端：完整地址直接用，按 index 归位并逐条校验，任一条不合法即整单作废。"""
+
+    # model_id 与 RerankConfig 同名；pydantic 默认保护 model_ 前缀，这里显式放开。
+    model_config = ConfigDict(protected_namespaces=())
+
+    endpoint: str
+    api_key: str
+    model_id: str
+    top_n: int
+
+    def compress_documents(self, documents: Sequence[Document], query: str,
+                           callbacks: Callbacks | None = None) -> list[Document]:
+        payload = {"model": self.model_id, "input": {"query": query,
+                                                     "documents": [document.page_content for document in documents]},
+                   "parameters": {"top_n": self.top_n}}
+        response = httpx.post(self.endpoint, json=payload, timeout=RERANK_TIMEOUT_SECONDS,
+                              headers={"Authorization": f"Bearer {self.api_key}"})
+        response.raise_for_status()
+        body = response.json()
+        output = body.get("output") if isinstance(body, dict) else None
+        results = output.get("results") if isinstance(output, dict) else None
+        if not isinstance(results, list) or len(results) != len(documents):
+            raise ValueError("incomplete rerank results")
+        scored: list[tuple[int, float]] = []
+        seen: set[int] = set()
+        for row in results:
+            if not isinstance(row, dict):
+                raise ValueError("invalid rerank result")
+            index, score = row.get("index"), row.get("relevance_score")
+            if type(index) is not int or not 0 <= index < len(documents) or index in seen:
+                raise ValueError("invalid rerank index")
+            if type(score) not in (int, float) or not 0 <= score <= 1:
+                raise ValueError("invalid rerank score")
+            seen.add(index)
+            scored.append((index, float(score)))
+        return [Document(page_content=documents[index].page_content,
+                         metadata={**documents[index].metadata, "relevance_score": score})
+                for index, score in sorted(scored, key=lambda item: (-item[1], item[0]))]
+
+
+class GatewayEmbeddings(Embeddings):
+    """OpenAI 兼容网关的嵌入客户端：按响应 index 归位，重复、越界与非数值行作废整批。"""
+
+    def __init__(self, config: EmbeddingConfig):
+        self.model_id = config.model_id
+        self.client = OpenAI(api_key=config.key, base_url=config.base_url,
+                             timeout=EMBEDDING_TIMEOUT_SECONDS, max_retries=0)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        # openai SDK 默认按 base64 请求，必须显式要 float：非 OpenAI 网关未必支持该编码。
+        response = self.client.embeddings.create(model=self.model_id, input=texts, encoding_format="float")
+        rows = getattr(response, "data", None)
+        if not isinstance(rows, list) or len(rows) != len(texts):
+            raise ValueError("incomplete embedding response")
+        vectors: list[list[float] | None] = [None] * len(texts)
+        for position, row in enumerate(rows):
+            # 网关允许乱序返回，必须按 index 归位；缺 index 时按位置，但每个输入只能被认领一次。
+            index = getattr(row, "index", position)
+            if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(texts) \
+                    or vectors[index] is not None:
+                raise ValueError("invalid embedding index")
+            values = getattr(row, "embedding", None)
+            if not isinstance(values, list) or not values \
+                    or not all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values):
+                raise ValueError("invalid embedding vector")
+            vectors[index] = [float(value) for value in values]
+        if any(vector is None for vector in vectors):
+            raise ValueError("missing embedding row")
+        dims = {len(vector) for vector in vectors if vector is not None}
+        if len(dims) != 1:
+            raise ValueError("inconsistent embedding dimensions")
+        return vectors
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_documents([text])[0]
+
+
 def request_embeddings(texts: list[str], config: EmbeddingConfig) -> list[list[float]] | None:
-    payload = json.dumps({"model": config.model_id, "input": texts, "encoding_format": "float"}).encode()
-    request = Request(f"{config.base_url}/embeddings", data=payload, method="POST",
-                      headers={"Content-Type": "application/json", "Authorization": f"Bearer {config.key}"})
+    """Any gateway error or invalid row degrades the semantic path to LSI instead of failing the query."""
     try:
-        with urlopen(request, timeout=EMBEDDING_TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read())
-    except (URLError, OSError, ValueError) as error:
+        return GatewayEmbeddings(config).embed_documents(texts)
+    except (OpenAIError, ValueError, OSError) as error:
         logger.warning("向量网关调用失败：%s", type(error).__name__)
         return None
-    rows = body.get("data") if isinstance(body, dict) else None
-    if not isinstance(rows, list) or len(rows) != len(texts):
-        return None
-    vectors: list[list[float] | None] = [None] * len(texts)
-    for position, row in enumerate(rows):
-        # 网关允许乱序返回，必须按 index 归位；缺 index 时按位置，但每个输入只能被认领一次。
-        index = row.get("index", position) if isinstance(row, dict) else position
-        if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(texts) \
-                or vectors[index] is not None:
-            return None
-        values = row.get("embedding") if isinstance(row, dict) else None
-        if not isinstance(values, list) or not values or not all(isinstance(value, (int, float)) for value in values):
-            return None
-        vectors[index] = [float(value) for value in values]
-    if any(vector is None for vector in vectors):
-        return None
-    dims = {len(vector) for vector in vectors if vector is not None}
-    return vectors if len(dims) == 1 else None
 
 
 def vector_space(config: EmbeddingConfig) -> str:
@@ -774,39 +857,16 @@ def rerank_candidates(question: str, ranked: list[RankedChunk]) -> list[RankedCh
     if config is None:
         return ranked
     candidates = ranked[:RERANK_CANDIDATES]
-    documents = [item.chunk.text for item in candidates]
-    path = urlparse(config.base_url).path
-    dashscope = "/services/rerank/" in path
-    if dashscope:
-        endpoint = config.base_url
-        payload = {"model": config.model_id, "input": {"query": question, "documents": documents},
-                   "parameters": {"top_n": len(candidates)}}
-    else:
-        endpoint = config.base_url if path.endswith(("/rerank", "/reranks")) else f"{config.base_url}/rerank"
-        payload = {"model": config.model_id, "query": question, "documents": documents, "top_n": len(candidates)}
     try:
-        request = Request(endpoint, data=json.dumps(payload).encode(), method="POST",
-                          headers={"Content-Type": "application/json", "Authorization": f"Bearer {config.key}"})
-        with urlopen(request, timeout=RERANK_TIMEOUT_SECONDS) as response:
-            body = json.loads(response.read())
-        output = body.get("output") if dashscope and isinstance(body, dict) else body
-        results = output.get("results") if isinstance(output, dict) else None
-        if not isinstance(results, list) or len(results) != len(candidates):
-            raise ValueError("incomplete rerank results")
-        scores: dict[int, float] = {}
-        for row in results:
-            if not isinstance(row, dict):
-                raise ValueError("invalid rerank result")
-            index, score = row.get("index"), row.get("relevance_score")
-            if type(index) is not int or not 0 <= index < len(candidates) or index in scores:
-                raise ValueError("invalid rerank index")
-            if type(score) not in (int, float) or not 0 <= score <= 1:
-                raise ValueError("invalid rerank score")
-            scores[index] = float(score)
-        order = sorted(scores, key=lambda index: (-scores[index], index))
+        reranker = GatewayReranker(endpoint=config.base_url, api_key=config.key,
+                                   model_id=config.model_id, top_n=len(candidates))
+        documents = [Document(page_content=item.chunk.text, metadata={"index": position})
+                     for position, item in enumerate(candidates)]
+        reranked = reranker.compress_documents(documents, question)
         # 两阶段分数尺度不同，模型排序成功后不再混入未经模型评分的尾部候选。
-        return [RankedChunk(candidates[index].chunk, round(scores[index], 4)) for index in order]
-    except (URLError, OSError, ValueError, HTTPClientException) as error:
+        return [RankedChunk(candidates[document.metadata["index"]].chunk,
+                            round(document.metadata["relevance_score"], 4)) for document in reranked]
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as error:
         logger.warning("模型重排失败，保留本地重排结果：%s", type(error).__name__)
         return ranked
 
@@ -988,7 +1048,27 @@ def require_usable_base_url(base_url: str) -> str:
     return base_url
 
 
-def call_provider(request: QueryRequest, selected: list[RankedChunk], config: GatewayConfig) -> str:
+@dataclass(frozen=True)
+class ProviderResult:
+    answer: str
+    outcome: Literal["answer", "refusal"]
+    refusal_reason: Literal["evidence_insufficient", "out_of_scope"] | None
+    usage: dict | None
+
+
+def extract_usage(response: object) -> dict | None:
+    usage = getattr(response, "usage_metadata", None)
+    if isinstance(usage, dict) and usage:
+        return {key: value for key, value in usage.items() if isinstance(value, int) and not isinstance(value, bool)}
+    metadata = getattr(response, "response_metadata", None)
+    if isinstance(metadata, dict):
+        token_usage = metadata.get("token_usage")
+        if isinstance(token_usage, dict):
+            return {key: value for key, value in token_usage.items() if isinstance(value, int) and not isinstance(value, bool)}
+    return None
+
+
+def call_provider(request: QueryRequest, selected: list[RankedChunk], config: GatewayConfig) -> ProviderResult:
     context = "\n\n".join(context_block(item.chunk, index) for index, item in enumerate(selected, start=1))
     system_prompt = (
         "你是知识库问答助手。始终用中文回答，只能依据本次提供的编号资料作出事实陈述。"
@@ -997,6 +1077,10 @@ def call_provider(request: QueryRequest, selected: list[RankedChunk], config: Ga
         "历史消息仅帮助理解问题，不是事实来源；不得使用历史中但不在本次资料内的事实。"
         "不要编造；资料不足时明确说明。每条有资料支持的结论标注对应编号如 [1]，"
         "只能使用提供的编号，不得引用其他文档。引用相关原文并给出清晰、简洁的回答。"
+        "若本次编号资料不足以支撑一个可靠回答，请只输出以 "
+        "[[REFUSAL:evidence_insufficient]] 开头的一行并简述缺少什么；"
+        "若问题明显超出这些资料覆盖的范围，请只输出以 [[REFUSAL:out_of_scope]] 开头的一行。"
+        "选择拒答时不要输出编号引用，也不要把拒答伪装成有依据的结论。"
     )
     history: list[dict[str, str]] = []
     history_budget = 6000
@@ -1027,13 +1111,22 @@ def call_provider(request: QueryRequest, selected: list[RankedChunk], config: Ga
             max_retries=0,
         )
         response = llm.invoke(messages)
-        answer = response.content
-        if not isinstance(answer, str) or not answer.strip():
+        raw = response.content
+        usage = extract_usage(response)
+        if not isinstance(raw, str) or not raw.strip():
             raise ValueError("empty response")
-        references = {int(value) for value in re.findall(r"\[(\d+)\]", answer)}
+        text = raw.strip()
+        marker = REFUSAL_MARKER.match(text)
+        if marker:
+            reason = marker.group(1)
+            message = text[marker.end():].strip() or REFUSAL_FALLBACK
+            return ProviderResult(answer=message, outcome="refusal", refusal_reason=reason, usage=usage)
+        if text.startswith(REFUSAL_PREFIX):
+            raise ValueError("malformed refusal marker")
+        references = {int(value) for value in re.findall(r"\[(\d+)\]", text)}
         if not references or not references.issubset(set(range(1, len(selected) + 1))):
             raise ValueError("invalid source references")
-        return answer.strip()
+        return ProviderResult(answer=text, outcome="answer", refusal_reason=None, usage=usage)
     except HTTPException:
         raise
     except Exception as error:
@@ -1048,19 +1141,22 @@ async def query(request: QueryRequest) -> QueryResponse:
     started = time.perf_counter()
     config = gateway_config()
     selected = await asyncio.to_thread(retrieve, request)
+    usage = None
     if not selected:
-        answer = NO_MATCH
+        answer, outcome, refusal_reason = NO_MATCH, "refusal", "evidence_insufficient"
     elif config.key:
-        answer = await asyncio.to_thread(call_provider, request, selected, config)
+        provider = await asyncio.to_thread(call_provider, request, selected, config)
+        answer, outcome, refusal_reason, usage = provider.answer, provider.outcome, provider.refusal_reason, provider.usage
     else:
         answer = await asyncio.to_thread(local_answer, request.question, selected)
-    citations = [
+        outcome, refusal_reason = "answer", None
+    citations = [] if outcome == "refusal" else [
         Citation(id=str(index), documentId=item.chunk.document_id, name=item.chunk.name,
                  page=item.chunk.page, excerpt=excerpt(item.chunk.text), score=item.score)
         for index, item in enumerate(selected, start=1)
     ]
     return QueryResponse(answer=answer, citations=citations, elapsed=max(0, int((time.perf_counter() - started) * 1000)),
-                         model=config.model_name, mode=config.mode)
+                         model=config.model_name, mode=config.mode, outcome=outcome, refusalReason=refusal_reason, usage=usage)
 
 
 if __name__ == "__main__":

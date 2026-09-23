@@ -36,7 +36,8 @@ public class AiClient {
         this.client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
     }
 
-    public record Answer(String answer, List<Citation> citations, double elapsed, String model, String mode) {}
+    public record Answer(String answer, List<Citation> citations, double elapsed, String model, String mode,
+                         String outcome, String refusalReason, JsonNode usage) {}
     public record AiHealth(boolean up, String mode, String index, long chunks) {
         public static AiHealth down() { return new AiHealth(false, "local", "unavailable", 0); }
     }
@@ -97,7 +98,19 @@ public class AiClient {
             citations.add(new Citation(text(cite, "id"), docId, allowed.get(docId).name(), cite.path("page").asInt(),
                     text(cite, "excerpt"), cite.path("score").asDouble()));
         }
-        return new Answer(answer, citations, node.path("elapsed").asDouble(), model, mode);
+        String outcome = text(node, "outcome");
+        if (!outcome.equals("answer") && !outcome.equals("refusal")) throw invalidResponse();
+        String refusalReason = null;
+        JsonNode reasonNode = node.path("refusalReason");
+        if (outcome.equals("refusal")) {
+            if (!reasonNode.isTextual()) throw invalidResponse();
+            refusalReason = reasonNode.asText();
+            if (!refusalReason.equals("evidence_insufficient") && !refusalReason.equals("out_of_scope")) throw invalidResponse();
+        } else if (!reasonNode.isNull() && !reasonNode.isMissingNode()) {
+            throw invalidResponse();
+        }
+        JsonNode usage = node.path("usage").isObject() ? node.path("usage") : null;
+        return new Answer(answer, citations, node.path("elapsed").asDouble(), model, mode, outcome, refusalReason, usage);
     }
 
     public AiHealth health() {

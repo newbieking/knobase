@@ -434,7 +434,7 @@ class BusinessApiIntegrationTest {
                         "id", "cite-1", "documentId", invalid ? "not-in-scope" : doc.path("id").asText(),
                         "name", doc.path("name").asText(), "page", 1, "excerpt", "引用的原文内容", "score", 0.95));
                 send(exchange, 200, Map.of("answer", "根据制度，年假为5、10或15天。", "citations", cites,
-                        "elapsed", 0.21, "model", request.path("model").asText(), "mode", "local"));
+                        "elapsed", 0.21, "model", request.path("model").asText(), "mode", "local", "outcome", "answer"));
             });
             server.start();
             return server;

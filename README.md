@@ -63,7 +63,7 @@
 | 业务服务 | Java, Spring Boot, Spring JDBC | Java 17, Spring Boot 3.4.9 |
 | 业务数据库 | H2 文件数据库 | 嵌入式 |
 | AI 服务 | Python, FastAPI, Uvicorn | FastAPI ≥0.118 |
-| LLM 编排 | LangChain (ChatOpenAI) | langchain-openai ≥0.3 |
+| LLM 编排 | LangChain（ChatOpenAI 生成 / Embeddings 嵌入 / DocumentCompressor 重排） | langchain-core ≥0.3, langchain-openai ≥0.3 |
 | 语义检索 | numpy（截断 SVD 潜在语义路 + 向量缓存） | numpy ≥2 |
 | 持久索引 | SQLite（标准库 `sqlite3`，分段与向量缓存） | 嵌入式 |
 | 文件解析 | pypdf, python-docx | - |
@@ -345,7 +345,7 @@ EMBEDDING_MODEL_ID=                      # OpenAI 兼容 /v1/embeddings 的模�
 
 # 模型重排配置（可选，三项同时填写才生效；留空则只用本地重排）
 RERANK_API_KEY=                          # 留空则跳过模型重排
-RERANK_BASE_URL=                         # DashScope 填完整 text-rerank 地址；其他网关填基址（自动补 /rerank）
+RERANK_BASE_URL=                         # DashScope 原生 text-rerank 完整地址，原样使用（不做路径补全）；如 https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
 RERANK_MODEL_ID=                         # 重排模型标识（单次最多 30 个候选，超时 10 秒即回落到本地序）
 
 # 本地检索索引（SQLite）路径，留空则用 backend/ai-service/.index/retrieval.db

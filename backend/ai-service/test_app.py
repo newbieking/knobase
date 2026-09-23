@@ -145,8 +145,10 @@ class ServiceTests(unittest.TestCase):
     def test_chinese_relevant_retrieval(self):
         status, body = request("POST", "/internal/query", query_payload())
         self.assertEqual(status, 200)
-        self.assertEqual(set(body), {"answer", "citations", "elapsed", "model", "mode"})
+        self.assertEqual(set(body), {"answer", "citations", "elapsed", "model", "mode", "outcome", "refusalReason", "usage"})
         self.assertEqual(body["mode"], "local")
+        self.assertEqual(body["outcome"], "answer")
+        self.assertIsNone(body["refusalReason"])
         self.assertEqual(body["model"], LOCAL_MODEL)
         self.assertEqual(body["citations"][0]["documentId"], "leave")
         self.assertIn("提前3个工作日", body["answer"])
@@ -624,13 +626,15 @@ class EmbeddingTests(unittest.TestCase):
     def test_embedding_rows_are_placed_by_index_and_duplicates_rejected(self):
         with self.configure("http://127.0.0.1:1/v1"):
             config = embedding_config()
-            reordered = json.dumps({"data": [{"index": 1, "embedding": [0.0, 1.0]},
-                                             {"index": 0, "embedding": [1.0, 0.0]}]}).encode()
-            with patch("app.urlopen", return_value=io.BytesIO(reordered)):
+            reordered = MagicMock()
+            reordered.embeddings.create.return_value = MagicMock(data=[
+                MagicMock(index=1, embedding=[0.0, 1.0]), MagicMock(index=0, embedding=[1.0, 0.0])])
+            with patch("app.OpenAI", return_value=reordered):
                 self.assertEqual(request_embeddings(["first", "second"], config), [[1.0, 0.0], [0.0, 1.0]])
-            duplicated = json.dumps({"data": [{"index": 0, "embedding": [1.0, 0.0]},
-                                              {"index": 0, "embedding": [1.0, 0.0]}]}).encode()
-            with patch("app.urlopen", return_value=io.BytesIO(duplicated)):
+            duplicated = MagicMock()
+            duplicated.embeddings.create.return_value = MagicMock(data=[
+                MagicMock(index=0, embedding=[1.0, 0.0]), MagicMock(index=0, embedding=[1.0, 0.0])])
+            with patch("app.OpenAI", return_value=duplicated):
                 self.assertIsNone(request_embeddings(["first", "second"], config))
 
     def test_dimension_drift_degrades_without_raising_or_caching(self):
